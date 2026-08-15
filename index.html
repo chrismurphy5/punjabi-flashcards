@@ -129,6 +129,16 @@ body {
 .voice-del-btn { color: var(--red); padding: 8px 10px; }
 @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.5; } }
 
+/* Create card form */
+.create-section { margin-bottom: 20px; }
+.create-label { display: block; font-size: 14px; font-weight: 600; color: var(--muted); margin-bottom: 6px; text-transform: uppercase; letter-spacing: 0.5px; }
+.create-input {
+  width: 100%; padding: 12px 16px; border-radius: var(--radius); border: 1px solid var(--border);
+  background: var(--card); color: var(--text); font-size: 16px; font-family: inherit; resize: vertical;
+}
+.create-input:focus { outline: none; border-color: var(--accent); }
+.create-input::placeholder { color: var(--muted); }
+
 /* Audio buttons */
 .audio-row { display: flex; gap: 10px; margin-top: 12px; }
 .audio-btn {
@@ -301,9 +311,11 @@ const FSRS = {
 // State
 // ═══════════════════════════════════════════════════════════════════
 const STORAGE_KEY = 'punjabi_flashcards_v1';
+const CUSTOM_KEY = 'punjabi_flashcards_custom';
 let deck = null;
 let progress = {};
 let notes = {};
+let customCards = [];
 let currentView = 'home';
 let currentSection = null;
 let currentCategory = null;
@@ -339,6 +351,324 @@ function setCardNote(cardId, text) {
     delete notes[cardId];
   }
   saveProgress();
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// Custom Cards (user-created, stored in localStorage + IndexedDB)
+// ═══════════════════════════════════════════════════════════════════
+let customCardDB = null;
+let customRecState = { side: null, recorder: null, chunks: [] };
+
+function openCustomCardDB() {
+  return new Promise((resolve, reject) => {
+    const req = indexedDB.open('punjabi_custom_cards', 1);
+    req.onupgradeneeded = (e) => {
+      const db = e.target.result;
+      if (!db.objectStoreNames.contains('audio')) db.createObjectStore('audio');
+    };
+    req.onsuccess = (e) => resolve(e.target.result);
+    req.onerror = (e) => reject(e.target.error);
+  });
+}
+
+async function saveCustomAudio(cardId, side, blob) {
+  if (!customCardDB) customCardDB = await openCustomCardDB();
+  return new Promise((resolve, reject) => {
+    const tx = customCardDB.transaction('audio', 'readwrite');
+    tx.objectStore('audio').put(blob, cardId + '_' + side);
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+}
+
+async function getCustomAudio(cardId, side) {
+  if (!customCardDB) customCardDB = await openCustomCardDB();
+  return new Promise((resolve, reject) => {
+    const tx = customCardDB.transaction('audio', 'readonly');
+    const req = tx.objectStore('audio').get(cardId + '_' + side);
+    req.onsuccess = () => resolve(req.result || null);
+    req.onerror = () => reject(req.error);
+  });
+}
+
+async function deleteCustomAudio(cardId, side) {
+  if (!customCardDB) customCardDB = await openCustomCardDB();
+  return new Promise((resolve, reject) => {
+    const tx = customCardDB.transaction('audio', 'readwrite');
+    tx.objectStore('audio').delete(cardId + '_' + side);
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+}
+
+function loadCustomCards() {
+  try {
+    customCards = JSON.parse(localStorage.getItem(CUSTOM_KEY) || '[]');
+  } catch { customCards = []; }
+}
+
+function saveCustomCards() {
+  localStorage.setItem(CUSTOM_KEY, JSON.stringify(customCards));
+}
+
+function mergeCustomCards() {
+  // Add custom cards to the deck if not already present
+  if (!deck) return;
+  const existingIds = new Set(deck.cards.map(c => c.id));
+  for (const cc of customCards) {
+    if (!existingIds.has(cc.id)) {
+      deck.cards.push(cc);
+    }
+  }
+}
+
+function createCustomCard(en, gur, rom, exEn, exGur) {
+  const id = 'custom-' + Date.now();
+  const card = {
+    id: id,
+    en: en,
+    rom: rom || '',
+    gur: gur || '',
+    sec: "Chris's Custom Cards",
+    cat: 'General',
+    ex_en: exEn || null,
+    ex_gur: exGur || null,
+    ex_rom: null,
+  };
+  customCards.push(card);
+  saveCustomCards();
+  mergeCustomCards();
+  return id;
+}
+
+// Audio recording for custom card creation
+async function startCustomRecord(side, btn) {
+  // Stop if already recording
+  if (customRecState.recorder && customRecState.recorder.state === 'recording') {
+    customRecState.recorder.stop();
+    return;
+  }
+  
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    customRecState.chunks = [];
+    customRecState.side = side;
+    
+    let mimeType = 'audio/webm';
+    if (!MediaRecorder.isTypeSupported(mimeType)) {
+      mimeType = 'audio/mp4';
+      if (!MediaRecorder.isTypeSupported(mimeType)) mimeType = '';
+    }
+    
+    customRecState.recorder = new MediaRecorder(stream, mimeType ? { mimeType } : undefined);
+    
+    customRecState.recorder.ondataavailable = (e) => {
+      if (e.data.size > 0) customRecState.chunks.push(e.data);
+    };
+    
+    customRecState.recorder.onstop = async () => {
+      stream.getTracks().forEach(t => t.stop());
+      const blob = new Blob(customRecState.chunks, { type: customRecState.recorder.mimeType || 'audio/webm' });
+      
+      // Store temporarily with a pending key
+      const tempKey = 'pending_' + customRecState.side;
+      await saveCustomAudio('pending', customRecState.side, blob);
+      
+      // Update UI
+      const recBtn = document.getElementById('rec-' + customRecState.side);
+      if (recBtn) {
+        recBtn.classList.remove('recording');
+        recBtn.textContent = '🎤 Record';
+      }
+      const playBtn = document.getElementById('rec-play-' + customRecState.side);
+      const delBtn = document.getElementById('rec-del-' + customRecState.side);
+      if (playBtn) playBtn.classList.remove('hidden');
+      if (delBtn) delBtn.classList.remove('hidden');
+      
+      customRecState.side = null;
+      customRecState.chunks = [];
+    };
+    
+    customRecState.recorder.start();
+    btn.classList.add('recording');
+    btn.textContent = '⏹ Stop';
+    
+  } catch (e) {
+    alert('Microphone access needed: ' + e.message);
+  }
+}
+
+async function playCustomRecord(side, btn) {
+  const blob = await getCustomAudio('pending', side);
+  if (!blob) return;
+  
+  if (currentAudio) {
+    currentAudio.pause();
+    if (currentAudio._btn) currentAudio._btn.classList.remove('playing');
+  }
+  
+  const url = URL.createObjectURL(blob);
+  const audio = new Audio(url);
+  audio._btn = btn;
+  if (btn) btn.classList.add('playing');
+  audio.onended = () => { if (btn) btn.classList.remove('playing'); URL.revokeObjectURL(url); };
+  currentAudio = audio;
+  audio.play().catch(() => { if (btn) btn.classList.remove('playing'); });
+}
+
+async function deleteCustomRecord(side) {
+  await deleteCustomAudio('pending', side);
+  const playBtn = document.getElementById('rec-play-' + side);
+  const delBtn = document.getElementById('rec-del-' + side);
+  if (playBtn) playBtn.classList.add('hidden');
+  if (delBtn) delBtn.classList.add('hidden');
+}
+
+function renderCreateCard() {
+  app.innerHTML = `
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
+      <button class="back-btn" onclick="currentView='home';render()">← Home</button>
+      <span style="font-size:16px;font-weight:600;">New Flashcard</span>
+    </div>
+    
+    <div class="create-section">
+      <label class="create-label">English</label>
+      <textarea class="create-input" id="new-en" placeholder="Type English text..." rows="2"></textarea>
+      <div class="voice-note-row">
+        <button class="voice-btn" id="rec-en" onclick="startCustomRecord('en',this)">🎤 Record</button>
+        <button class="voice-play-btn hidden" id="rec-play-en" onclick="playCustomRecord('en',this)">▶️ Play</button>
+        <button class="voice-del-btn hidden" id="rec-del-en" onclick="deleteCustomRecord('en')">🗑️</button>
+      </div>
+    </div>
+    
+    <div class="create-section">
+      <label class="create-label">Punjabi (Gurmukhi)</label>
+      <textarea class="create-input" id="new-gur" placeholder="Type Punjabi text..." rows="2"></textarea>
+      <div class="voice-note-row">
+        <button class="voice-btn" id="rec-pa" onclick="startCustomRecord('pa',this)">🎤 Record</button>
+        <button class="voice-play-btn hidden" id="rec-play-pa" onclick="playCustomRecord('pa',this)">▶️ Play</button>
+        <button class="voice-del-btn hidden" id="rec-del-pa" onclick="deleteCustomRecord('pa')">🗑️</button>
+      </div>
+    </div>
+    
+    <div class="create-section">
+      <label class="create-label">Romanized (optional)</label>
+      <input class="create-input" id="new-rom" placeholder="Romanized Punjabi..." style="height:40px;">
+    </div>
+    
+    <div class="create-section">
+      <label class="create-label">Example sentence (optional)</label>
+      <textarea class="create-input" id="new-ex-en" placeholder="English example..." rows="1"></textarea>
+      <textarea class="create-input" id="new-ex-gur" placeholder="Punjabi example..." rows="1" style="margin-top:6px;"></textarea>
+    </div>
+    
+    <div style="display:flex;gap:10px;margin-top:20px;">
+      <button class="btn-secondary" style="flex:1;" onclick="previewCustomCard()">👁 Preview</button>
+      <button class="btn-primary" style="flex:1;" onclick="submitCustomCard()">✓ Save Card</button>
+    </div>
+  `;
+}
+
+async function previewCustomCard() {
+  const en = document.getElementById('new-en').value.trim();
+  const gur = document.getElementById('new-gur').value.trim();
+  const rom = document.getElementById('new-rom').value.trim();
+  
+  if (!en && !gur) {
+    showFlash('Enter at least English or Punjabi text');
+    return;
+  }
+  
+  // Show as a flashcard preview
+  app.innerHTML = `
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
+      <button class="back-btn" onclick="renderCreateCard()">← Edit</button>
+      <span style="font-size:16px;font-weight:600;">Preview</span>
+    </div>
+    <div class="card-container">
+      <div class="flashcard" id="flashcard" onclick="flipCard()" style="min-height:200px;">
+        <div class="flashcard-face">
+          <div class="card-english">${en || '(empty)'}</div>
+          <div class="card-hint">Tap to reveal</div>
+        </div>
+        <div class="flashcard-face flashcard-back">
+          <div class="card-gurmukhi">${gur || '(empty)'}</div>
+          ${rom ? `<div class="card-romanized">${rom}</div>` : ''}
+        </div>
+      </div>
+    </div>
+    <div style="display:flex;gap:10px;margin-top:20px;">
+      <button class="btn-secondary" style="flex:1;" onclick="renderCreateCard()">← Back to Edit</button>
+      <button class="btn-primary" style="flex:1;" onclick="submitCustomCard()">✓ Save Card</button>
+    </div>
+  `;
+  isFlipped = false;
+}
+
+async function submitCustomCard() {
+  const en = document.getElementById('new-en') ? document.getElementById('new-en').value.trim() : '';
+  const gur = document.getElementById('new-gur') ? document.getElementById('new-gur').value.trim() : '';
+  const rom = document.getElementById('new-rom') ? document.getElementById('new-rom').value.trim() : '';
+  const exEn = document.getElementById('new-ex-en') ? document.getElementById('new-ex-en').value.trim() : '';
+  const exGur = document.getElementById('new-ex-gur') ? document.getElementById('new-ex-gur').value.trim() : '';
+  
+  if (!en && !gur) {
+    showFlash('Enter at least English or Punjabi text');
+    return;
+  }
+  
+  const cardId = createCustomCard(en, gur, rom, exEn, exGur);
+  
+  // Move any pending audio recordings to the final card ID
+  const enAudio = await getCustomAudio('pending', 'en');
+  if (enAudio) {
+    await saveCustomAudio(cardId, 'en', enAudio);
+    await deleteCustomAudio('pending', 'en');
+  }
+  const paAudio = await getCustomAudio('pending', 'pa');
+  if (paAudio) {
+    await saveCustomAudio(cardId, 'pa', paAudio);
+    await deleteCustomAudio('pending', 'pa');
+  }
+  
+  // Show success message instead of alert (alert blocks browser)
+  currentView = 'home';
+  render();
+  // Flash a success message
+  var msg = document.createElement('div');
+  msg.style.cssText = 'position:fixed;top:20px;left:50%;transform:translateX(-50%);background:var(--green);color:white;padding:12px 24px;border-radius:8px;font-size:14px;z-index:999;box-shadow:0 4px 12px rgba(0,0,0,0.3);';
+  msg.textContent = "✓ Card saved to Chris's Custom Cards";
+  document.body.appendChild(msg);
+  setTimeout(function() { msg.remove(); }, 3000);
+}
+
+function showFlash(text) {
+  var msg = document.createElement('div');
+  msg.style.cssText = 'position:fixed;top:20px;left:50%;transform:translateX(-50%);background:var(--orange);color:white;padding:12px 24px;border-radius:8px;font-size:14px;z-index:999;box-shadow:0 4px 12px rgba(0,0,0,0.3);';
+  msg.textContent = text;
+  document.body.appendChild(msg);
+  setTimeout(function() { msg.remove(); }, 2500);
+}
+
+// Play custom card audio (used in card view for custom cards)
+async function playCustomCardAudio(cardId, side, btn) {
+  const blob = await getCustomAudio(cardId, side);
+  if (!blob) {
+    // Fallback to gTTS files for non-custom cards
+    return false;
+  }
+  if (currentAudio) {
+    currentAudio.pause();
+    if (currentAudio._btn) currentAudio._btn.classList.remove('playing');
+  }
+  const url = URL.createObjectURL(blob);
+  const audio = new Audio(url);
+  audio._btn = btn;
+  if (btn) btn.classList.add('playing');
+  audio.onended = () => { if (btn) btn.classList.remove('playing'); URL.revokeObjectURL(url); };
+  currentAudio = audio;
+  audio.play().catch(() => { if (btn) btn.classList.remove('playing'); });
+  return true;
 }
 
 function getCardProgress(cardId) {
@@ -544,6 +874,16 @@ function playAudio(src, btn) {
 }
 
 function playCardAudio(cardId, lang, btn) {
+  // Check if this is a custom card — try IndexedDB first
+  if (cardId.startsWith('custom-')) {
+    playCustomCardAudio(cardId, lang, btn).then((played) => {
+      if (!played) {
+        // No recording found, do nothing
+        console.log('No custom audio for', cardId, lang);
+      }
+    });
+    return;
+  }
   const base = 'audio/' + lang + '/' + cardId + '.mp3';
   playAudio(base, btn);
 }
@@ -565,6 +905,7 @@ function render() {
   else if (currentView === 'sections') renderSections();
   else if (currentView === 'categories') renderCategories();
   else if (currentView === 'card') renderCard();
+  else if (currentView === 'create') renderCreateCard();
 }
 
 function renderHome() {
@@ -585,6 +926,9 @@ function renderHome() {
     <div class="mode-tabs">
       <div class="mode-tab active" onclick="goToSections()">📚 Browse Themes</div>
       <div class="mode-tab active" onclick="startSRSSession()">🔄 SRS Review</div>
+    </div>
+    <div style="margin-top:12px;">
+      <button class="btn-primary" style="width:100%;" onclick="currentView='create';render()">➕ Create New Card</button>
     </div>
     <div style="margin-top:20px;">
       <input class="search-box" type="text" placeholder="Search cards..." oninput="handleSearch(this.value)">
@@ -945,11 +1289,13 @@ function showSearchCard(card) {
 // ═══════════════════════════════════════════════════════════════════
 async function init() {
   loadProgress();
+  loadCustomCards();
   app.innerHTML = '<div style="text-align:center;padding:60px 20px;color:var(--muted);">Loading deck...</div>';
   
   try {
     const resp = await fetch('data/deck.json');
     deck = await resp.json();
+    mergeCustomCards();
     render();
   } catch (e) {
     app.innerHTML = `<div style="text-align:center;padding:40px 20px;color:var(--red);">
