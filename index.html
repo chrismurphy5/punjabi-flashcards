@@ -346,8 +346,8 @@ function playAudio(src, btn) {
   audio.play().catch(() => { if (btn) btn.classList.remove('playing'); });
 }
 
-function playCardAudio(card, lang, btn) {
-  const base = 'audio/' + lang + '/' + card.id + '.mp3';
+function playCardAudio(cardId, lang, btn) {
+  const base = 'audio/' + lang + '/' + cardId + '.mp3';
   playAudio(base, btn);
 }
 
@@ -524,8 +524,8 @@ function renderBrowse() {
         </div>
       </div>
       <div class="audio-row" style="justify-content:center;">
-        <button class="audio-btn" onclick="event.stopPropagation();playCardAudio(${JSON.stringify(card)},'en',this)">🔊EN</button>
-        <button class="audio-btn" onclick="event.stopPropagation();playCardAudio(${JSON.stringify(card)},'pa',this)">🔊ਪੰ</button>
+        <button class="audio-btn" onclick="event.stopPropagation();playCardAudio('${card.id}','en',this)">🔊EN</button>
+        <button class="audio-btn" onclick="event.stopPropagation();playCardAudio('${card.id}','pa',this)">🔊ਪੰ</button>
       </div>
     </div>
     <div class="card-nav">
@@ -630,8 +630,8 @@ function renderStudy() {
         </div>
       </div>
       <div class="audio-row" style="justify-content:center;">
-        <button class="audio-btn" onclick="event.stopPropagation();playCardAudio(${JSON.stringify(card)},'en',this)">🔊EN</button>
-        <button class="audio-btn" onclick="event.stopPropagation();playCardAudio(${JSON.stringify(card)},'pa',this)">🔊ਪੰ</button>
+        <button class="audio-btn" onclick="event.stopPropagation();playCardAudio('${card.id}','en',this)">🔊EN</button>
+        <button class="audio-btn" onclick="event.stopPropagation();playCardAudio('${card.id}','pa',this)">🔊ਪੰ</button>
       </div>
     </div>
     <div class="rating-row" id="rating-row" style="${isFlipped ? '' : 'visibility:hidden;'}">
