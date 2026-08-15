@@ -550,34 +550,44 @@ function playCardAudio(cardId, lang, btn) {
 
 // Play example sentence via Web Speech API (speech synthesis)
 function playExampleAudio(text, lang, btn) {
-  if (!text || !window.speechSynthesis) return;
+  if (!text || !window.speechSynthesis) {
+    console.log('playExampleAudio: no text or no speechSynthesis');
+    return;
+  }
   
   // Stop any current audio
   if (currentAudio) {
-    currentAudio.pause();
+    try { currentAudio.pause(); } catch(e) {}
     if (currentAudio._btn) currentAudio._btn.classList.remove('playing');
   }
   window.speechSynthesis.cancel();
   
-  const utter = new SpeechSynthesisUtterance(text);
-  // Map lang codes to BCP-47
+  // Decode HTML entities from data attribute
+  var txt = document.createElement('textarea');
+  txt.innerHTML = text;
+  text = txt.value;
+  
+  var utter = new SpeechSynthesisUtterance(text);
   utter.lang = lang === 'pa' ? 'pa-IN' : 'en-US';
-  utter.rate = 0.85;  // slightly slower for learning
+  utter.rate = 0.85;
+  utter.volume = 1.0;
   
   if (btn) btn.classList.add('playing');
-  utter.onend = () => { if (btn) btn.classList.remove('playing'); };
-  utter.onerror = () => { if (btn) btn.classList.remove('playing'); };
+  utter.onend = function() { if (btn) btn.classList.remove('playing'); };
+  utter.onerror = function(e) { console.log('TTS error:', e); if (btn) btn.classList.remove('playing'); };
   
   // Try to find a matching voice
-  const voices = window.speechSynthesis.getVoices();
-  const match = voices.find(v => v.lang.startsWith(lang === 'pa' ? 'pa' : 'en'));
+  var voices = window.speechSynthesis.getVoices();
+  var match = voices.find(function(v) { return v.lang.startsWith(lang === 'pa' ? 'pa' : 'en'); });
   if (match) utter.voice = match;
   
-  window.speechSynthesis.speak(utter);
+  // Small delay helps on iOS
+  setTimeout(function() {
+    window.speechSynthesis.speak(utter);
+  }, 50);
   
-  // Track it so we can stop it if another audio plays
   currentAudio = { 
-    pause: () => window.speechSynthesis.cancel(),
+    pause: function() { window.speechSynthesis.cancel(); },
     _btn: btn 
   };
 }
@@ -846,8 +856,8 @@ function renderCard() {
       <div class="audio-row" style="justify-content:center; flex-wrap: wrap;">
         <button class="audio-btn" onclick="event.stopPropagation();playCardAudio('${card.id}','en',this)">🔊EN</button>
         <button class="audio-btn" onclick="event.stopPropagation();playCardAudio('${card.id}','pa',this)">🔊ਪੰ</button>
-        ${card.ex_en ? `<button class="audio-btn ex-btn" onclick="event.stopPropagation();playExampleAudio(${JSON.stringify(card.ex_en).replace(/'/g, "&#39;")},'en',this)">🔊Ex EN</button>` : ''}
-        ${card.ex_gur ? `<button class="audio-btn ex-btn" onclick="event.stopPropagation();playExampleAudio(${JSON.stringify(card.ex_gur).replace(/'/g, "&#39;")},'pa',this)">🔊Ex ਪੰ</button>` : ''}
+        ${card.ex_en ? `<button class="audio-btn ex-btn" data-ex-text="${card.ex_en.replace(/"/g, '&quot;').replace(/</g, '&lt;')}" onclick="event.stopPropagation();playExampleAudio(this.dataset.exText,'en',this)">🔊Ex EN</button>` : ''}
+        ${card.ex_gur ? `<button class="audio-btn ex-btn" data-ex-text="${card.ex_gur.replace(/"/g, '&quot;').replace(/</g, '&lt;')}" onclick="event.stopPropagation();playExampleAudio(this.dataset.exText,'pa',this)">🔊Ex ਪੰ</button>` : ''}
       </div>
     </div>
     <div class="rating-row">
