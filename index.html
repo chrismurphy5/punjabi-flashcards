@@ -115,6 +115,19 @@ body {
 .card-note-input:focus { outline: none; border-color: var(--accent); }
 .card-note-input::placeholder { color: var(--muted); font-size: 12px; }
 
+/* Voice note buttons */
+.voice-note-row { display: flex; gap: 8px; margin-top: 8px; align-items: center; }
+.voice-btn, .voice-play-btn, .voice-del-btn {
+  padding: 8px 14px; border-radius: 20px; border: 1px solid var(--border);
+  background: var(--card); color: var(--text); font-size: 13px; cursor: pointer;
+  transition: all 0.2s; display: flex; align-items: center; gap: 4px;
+}
+.voice-btn:active { background: var(--card-hover); }
+.voice-btn.recording { background: var(--red); color: white; border-color: var(--red); animation: pulse 1s infinite; }
+.voice-play-btn { color: var(--green); }
+.voice-del-btn { color: var(--red); padding: 8px 10px; }
+@keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.5; } }
+
 /* Audio buttons */
 .audio-row { display: flex; gap: 10px; margin-top: 12px; }
 .audio-btn {
@@ -350,6 +363,162 @@ function getStudiedCount() {
 
 function getTotalCards() {
   return deck ? deck.cards.length : 0;
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// Voice Notes (IndexedDB + MediaRecorder)
+// ═══════════════════════════════════════════════════════════════════
+let voiceDB = null;
+let mediaRecorder = null;
+let audioChunks = [];
+let recordingCardId = null;
+
+function openVoiceDB() {
+  return new Promise((resolve, reject) => {
+    const req = indexedDB.open('punjabi_voice_notes', 1);
+    req.onupgradeneeded = (e) => {
+      const db = e.target.result;
+      if (!db.objectStoreNames.contains('voiceNotes')) {
+        db.createObjectStore('voiceNotes');
+      }
+    };
+    req.onsuccess = (e) => resolve(e.target.result);
+    req.onerror = (e) => reject(e.target.error);
+  });
+}
+
+async function saveVoiceNote(cardId, blob) {
+  if (!voiceDB) voiceDB = await openVoiceDB();
+  return new Promise((resolve, reject) => {
+    const tx = voiceDB.transaction('voiceNotes', 'readwrite');
+    const store = tx.objectStore('voiceNotes');
+    store.put(blob, cardId);
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+}
+
+async function getVoiceNote(cardId) {
+  if (!voiceDB) voiceDB = await openVoiceDB();
+  return new Promise((resolve, reject) => {
+    const tx = voiceDB.transaction('voiceNotes', 'readonly');
+    const store = tx.objectStore('voiceNotes');
+    const req = store.get(cardId);
+    req.onsuccess = () => resolve(req.result || null);
+    req.onerror = () => reject(req.error);
+  });
+}
+
+async function deleteVoiceNoteFromDB(cardId) {
+  if (!voiceDB) voiceDB = await openVoiceDB();
+  return new Promise((resolve, reject) => {
+    const tx = voiceDB.transaction('voiceNotes', 'readwrite');
+    const store = tx.objectStore('voiceNotes');
+    store.delete(cardId);
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+}
+
+async function toggleRecording(cardId, btn) {
+  if (mediaRecorder && mediaRecorder.state === 'recording') {
+    // Stop recording
+    mediaRecorder.stop();
+    return;
+  }
+  
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    audioChunks = [];
+    recordingCardId = cardId;
+    
+    // Pick a format iOS Safari supports
+    let mimeType = 'audio/webm';
+    if (!MediaRecorder.isTypeSupported(mimeType)) {
+      mimeType = 'audio/mp4';
+      if (!MediaRecorder.isTypeSupported(mimeType)) {
+        mimeType = '';  // let browser pick default
+      }
+    }
+    
+    mediaRecorder = new MediaRecorder(stream, mimeType ? { mimeType } : undefined);
+    
+    mediaRecorder.ondataavailable = (e) => {
+      if (e.data.size > 0) audioChunks.push(e.data);
+    };
+    
+    mediaRecorder.onstop = async () => {
+      stream.getTracks().forEach(t => t.stop());
+      const blob = new Blob(audioChunks, { type: mediaRecorder.mimeType || 'audio/webm' });
+      await saveVoiceNote(recordingCardId, blob);
+      
+      // Update UI
+      const btn2 = document.getElementById('voice-btn-' + recordingCardId);
+      if (btn2) {
+        btn2.classList.remove('recording');
+        btn2.querySelector('.voice-btn-text').textContent = '🎤 Record';
+      }
+      // Show play/delete buttons
+      const playBtn = document.getElementById('voice-play-' + recordingCardId);
+      const delBtn = document.getElementById('voice-del-' + recordingCardId);
+      if (playBtn) playBtn.classList.remove('hidden');
+      if (delBtn) delBtn.classList.remove('hidden');
+      
+      recordingCardId = null;
+      audioChunks = [];
+    };
+    
+    mediaRecorder.start();
+    btn.classList.add('recording');
+    btn.querySelector('.voice-btn-text').textContent = '⏹ Stop';
+    
+  } catch (e) {
+    alert('Microphone access needed: ' + e.message);
+  }
+}
+
+async function playVoiceNote(cardId, btn) {
+  const blob = await getVoiceNote(cardId);
+  if (!blob) return;
+  
+  if (currentAudio) {
+    currentAudio.pause();
+    if (currentAudio._btn) currentAudio._btn.classList.remove('playing');
+  }
+  
+  const url = URL.createObjectURL(blob);
+  const audio = new Audio(url);
+  audio._btn = btn;
+  if (btn) btn.classList.add('playing');
+  audio.onended = () => { if (btn) btn.classList.remove('playing'); URL.revokeObjectURL(url); };
+  audio.onerror = () => { if (btn) btn.classList.remove('playing'); URL.revokeObjectURL(url); };
+  currentAudio = audio;
+  audio.play().catch(() => { if (btn) btn.classList.remove('playing'); });
+}
+
+async function deleteVoiceNote(cardId) {
+  if (!confirm('Delete voice note?')) return;
+  await deleteVoiceNoteFromDB(cardId);
+  const playBtn = document.getElementById('voice-play-' + cardId);
+  const delBtn = document.getElementById('voice-del-' + cardId);
+  if (playBtn) playBtn.classList.add('hidden');
+  if (delBtn) delBtn.classList.add('hidden');
+}
+
+// Check if a card has a voice note and show buttons
+async function refreshVoiceNoteUI(cardId) {
+  const blob = await getVoiceNote(cardId);
+  const playBtn = document.getElementById('voice-play-' + cardId);
+  const delBtn = document.getElementById('voice-del-' + cardId);
+  if (playBtn && delBtn) {
+    if (blob) {
+      playBtn.classList.remove('hidden');
+      delBtn.classList.remove('hidden');
+    } else {
+      playBtn.classList.add('hidden');
+      delBtn.classList.add('hidden');
+    }
+  }
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -625,6 +794,17 @@ function renderCard() {
             onclick="event.stopPropagation()" 
             oninput="setCardNote('${card.id}', this.value)"
           >${getCardNote(card.id)}</textarea>
+          <div class="voice-note-row" onclick="event.stopPropagation()">
+            <button class="voice-btn" id="voice-btn-${card.id}" onclick="event.stopPropagation();toggleRecording('${card.id}', this)">
+              <span class="voice-btn-text">🎤 Record</span>
+            </button>
+            <button class="voice-play-btn hidden" id="voice-play-${card.id}" onclick="event.stopPropagation();playVoiceNote('${card.id}', this)">
+              ▶️ Play
+            </button>
+            <button class="voice-del-btn hidden" id="voice-del-${card.id}" onclick="event.stopPropagation();deleteVoiceNote('${card.id}')">
+              🗑️
+            </button>
+          </div>
         </div>
       </div>
       <div class="audio-row" style="justify-content:center;">
@@ -654,6 +834,9 @@ function renderCard() {
   `;
   
   isFlipped = false;
+  
+  // Check if this card has an existing voice note
+  refreshVoiceNoteUI(card.id);
 }
 
 function cardRate(cardId, rating) {
