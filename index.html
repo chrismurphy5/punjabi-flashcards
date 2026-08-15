@@ -138,6 +138,7 @@ body {
 }
 .audio-btn:active { background: var(--accent); color: var(--bg); }
 .audio-btn.playing { background: var(--accent); color: var(--bg); }
+.ex-btn { font-size: 11px; padding: 0 10px; width: auto; min-width: 44px; height: 36px; border-radius: 18px; }
 
 /* SRS rating buttons */
 .rating-row { display: flex; gap: 8px; margin-top: 16px; }
@@ -547,6 +548,40 @@ function playCardAudio(cardId, lang, btn) {
   playAudio(base, btn);
 }
 
+// Play example sentence via Web Speech API (speech synthesis)
+function playExampleAudio(text, lang, btn) {
+  if (!text || !window.speechSynthesis) return;
+  
+  // Stop any current audio
+  if (currentAudio) {
+    currentAudio.pause();
+    if (currentAudio._btn) currentAudio._btn.classList.remove('playing');
+  }
+  window.speechSynthesis.cancel();
+  
+  const utter = new SpeechSynthesisUtterance(text);
+  // Map lang codes to BCP-47
+  utter.lang = lang === 'pa' ? 'pa-IN' : 'en-US';
+  utter.rate = 0.85;  // slightly slower for learning
+  
+  if (btn) btn.classList.add('playing');
+  utter.onend = () => { if (btn) btn.classList.remove('playing'); };
+  utter.onerror = () => { if (btn) btn.classList.remove('playing'); };
+  
+  // Try to find a matching voice
+  const voices = window.speechSynthesis.getVoices();
+  const match = voices.find(v => v.lang.startsWith(lang === 'pa' ? 'pa' : 'en'));
+  if (match) utter.voice = match;
+  
+  window.speechSynthesis.speak(utter);
+  
+  // Track it so we can stop it if another audio plays
+  currentAudio = { 
+    pause: () => window.speechSynthesis.cancel(),
+    _btn: btn 
+  };
+}
+
 // ═══════════════════════════════════════════════════════════════════
 // Rendering
 // ═══════════════════════════════════════════════════════════════════
@@ -808,9 +843,11 @@ function renderCard() {
           </div>
         </div>
       </div>
-      <div class="audio-row" style="justify-content:center;">
+      <div class="audio-row" style="justify-content:center; flex-wrap: wrap;">
         <button class="audio-btn" onclick="event.stopPropagation();playCardAudio('${card.id}','en',this)">🔊EN</button>
         <button class="audio-btn" onclick="event.stopPropagation();playCardAudio('${card.id}','pa',this)">🔊ਪੰ</button>
+        ${card.ex_en ? `<button class="audio-btn ex-btn" onclick="event.stopPropagation();playExampleAudio(${JSON.stringify(card.ex_en).replace(/'/g, "&#39;")},'en',this)">🔊Ex EN</button>` : ''}
+        ${card.ex_gur ? `<button class="audio-btn ex-btn" onclick="event.stopPropagation();playExampleAudio(${JSON.stringify(card.ex_gur).replace(/'/g, "&#39;")},'pa',this)">🔊Ex ਪੰ</button>` : ''}
       </div>
     </div>
     <div class="rating-row">
