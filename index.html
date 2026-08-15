@@ -558,8 +558,22 @@ function renderCreateCard() {
     
     <div class="create-section">
       <label class="create-label">Example sentence (optional)</label>
-      <textarea class="create-input" id="new-ex-en" placeholder="English example..." rows="1"></textarea>
-      <textarea class="create-input" id="new-ex-gur" placeholder="Punjabi example..." rows="1" style="margin-top:6px;"></textarea>
+      <div style="margin-bottom:8px;">
+        <textarea class="create-input" id="new-ex-en" placeholder="English example..." rows="1"></textarea>
+        <div class="voice-note-row" style="margin-top:6px;">
+          <button class="voice-btn" id="rec-ex-en" onclick="startCustomRecord('ex_en',this)">🎤 Record</button>
+          <button class="voice-play-btn hidden" id="rec-play-ex_en" onclick="playCustomRecord('ex_en',this)">▶️ Play</button>
+          <button class="voice-del-btn hidden" id="rec-del-ex_en" onclick="deleteCustomRecord('ex_en')">🗑️</button>
+        </div>
+      </div>
+      <div>
+        <textarea class="create-input" id="new-ex-gur" placeholder="Punjabi example..." rows="1"></textarea>
+        <div class="voice-note-row" style="margin-top:6px;">
+          <button class="voice-btn" id="rec-ex-gur" onclick="startCustomRecord('ex_gur',this)">🎤 Record</button>
+          <button class="voice-play-btn hidden" id="rec-play-ex_gur" onclick="playCustomRecord('ex_gur',this)">▶️ Play</button>
+          <button class="voice-del-btn hidden" id="rec-del-ex_gur" onclick="deleteCustomRecord('ex_gur')">🗑️</button>
+        </div>
+      </div>
     </div>
     
     <div style="display:flex;gap:10px;margin-top:20px;">
@@ -629,6 +643,16 @@ async function submitCustomCard() {
   if (paAudio) {
     await saveCustomAudio(cardId, 'pa', paAudio);
     await deleteCustomAudio('pending', 'pa');
+  }
+  const exEnAudio = await getCustomAudio('pending', 'ex_en');
+  if (exEnAudio) {
+    await saveCustomAudio(cardId, 'ex_en', exEnAudio);
+    await deleteCustomAudio('pending', 'ex_en');
+  }
+  const exGurAudio = await getCustomAudio('pending', 'ex_gur');
+  if (exGurAudio) {
+    await saveCustomAudio(cardId, 'ex_gur', exGurAudio);
+    await deleteCustomAudio('pending', 'ex_gur');
   }
   
   // Show success message instead of alert (alert blocks browser)
@@ -890,6 +914,14 @@ function playCardAudio(cardId, lang, btn) {
 
 // Play example sentence audio from pre-generated gTTS files
 function playExampleAudio(cardId, lang, btn) {
+  // Check if this is a custom card — try IndexedDB first
+  if (cardId.startsWith('custom-')) {
+    var side = lang === 'pa' ? 'ex_gur' : 'ex_en';
+    playCustomCardAudio(cardId, side, btn).then(function(played) {
+      if (!played) { console.log('No custom example audio for', cardId, side); }
+    });
+    return;
+  }
   const base = 'audio/ex_' + lang + '/' + cardId + '.mp3';
   playAudio(base, btn);
 }
