@@ -361,9 +361,7 @@ function render() {
   if (currentView === 'home') renderHome();
   else if (currentView === 'sections') renderSections();
   else if (currentView === 'categories') renderCategories();
-  else if (currentView === 'browse') renderBrowse();
-  else if (currentView === 'study') renderStudy();
-  else if (currentView === 'complete') renderComplete();
+  else if (currentView === 'card') renderCard();
 }
 
 function renderHome() {
@@ -470,110 +468,48 @@ function renderCategories() {
 
 function selectCategory(cat) {
   currentCategory = cat;
-  browseCards = deck.cards.filter(c => 
+  const cards = deck.cards.filter(c => 
     (c.sec || 'Other Vocabulary') === currentSection && 
     (c.cat || 'General') === currentCategory
   );
-  browseIndex = 0;
-  currentView = 'browse';
-  render();
+  startBrowseSession(cards, 'categories', `← ${currentCategory}`);
 }
 
 function studySection() {
-  browseCards = deck.cards.filter(c => (c.sec || 'Other Vocabulary') === currentSection);
+  const cards = deck.cards.filter(c => (c.sec || 'Other Vocabulary') === currentSection);
   // Sort: due first, then new
-  browseCards.sort((a, b) => {
+  cards.sort((a, b) => {
     const aDue = isDue(a.id), bDue = isDue(b.id);
     if (aDue && !bDue) return -1;
     if (!aDue && bDue) return 1;
     return 0;
   });
-  sessionCards = browseCards.slice(0, 100);
-  sessionIndex = 0;
-  currentView = 'study';
+  startBrowseSession(cards.slice(0, 100), 'categories', `← ${currentSection}`);
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// Unified Card View (used by both browse and SRS)
+// ═══════════════════════════════════════════════════════════════════
+
+// Shared state for whichever mode we're in
+let cardSession = {
+  cards: [],
+  index: 0,
+  isSRS: false,       // true = SRS mode (auto-advance on rate), false = browse mode
+  backTarget: 'sections',
+  backLabel: '',
+};
+
+function startBrowseSession(cards, backTarget, backLabel) {
+  cardSession = { cards, index: 0, isSRS: false, backTarget, backLabel };
+  currentView = 'card';
   render();
 }
 
-function renderBrowse() {
-  if (browseIndex >= browseCards.length) {
-    currentView = 'categories';
-    render();
-    return;
-  }
-  
-  const card = browseCards[browseIndex];
-  
-  app.innerHTML = `
-    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
-      <button class="back-btn" onclick="currentView='categories';render()">← ${currentCategory}</button>
-      <span class="nav-info">${browseIndex + 1} / ${browseCards.length}</span>
-    </div>
-    <div class="progress-bar"><div class="progress-fill" style="width:${((browseIndex + 1) / browseCards.length) * 100}%"></div></div>
-    <div class="card-container">
-      <div class="flashcard" id="flashcard" onclick="flipCard()">
-        <div class="flashcard-face">
-          <div class="card-english">${card.en}</div>
-          <div class="card-hint">Tap to reveal</div>
-        </div>
-        <div class="flashcard-face flashcard-back">
-          <div class="card-gurmukhi">${card.gur || card.rom}</div>
-          ${card.rom ? `<div class="card-romanized">${card.rom}</div>` : ''}
-          ${card.ex_en ? `<div class="card-example">${card.ex_en}</div>` : ''}
-          ${card.ex_gur ? `<div class="card-example card-example-gur">${card.ex_gur}</div>` : ''}
-          ${card.ex_rom ? `<div class="card-example">${card.ex_rom}</div>` : ''}
-        </div>
-      </div>
-      <div class="audio-row" style="justify-content:center;">
-        <button class="audio-btn" onclick="event.stopPropagation();playCardAudio('${card.id}','en',this)">🔊EN</button>
-        <button class="audio-btn" onclick="event.stopPropagation();playCardAudio('${card.id}','pa',this)">🔊ਪੰ</button>
-      </div>
-    </div>
-    <div class="card-nav">
-      <button class="nav-btn" onclick="prevBrowse()" ${browseIndex === 0 ? 'disabled' : ''}>‹</button>
-      <button class="rate-btn rate-good" style="flex:1;max-width:120px;" onclick="markReviewed('${card.id}',3)">Got it</button>
-      <button class="nav-btn" onclick="nextBrowse()">›</button>
-    </div>
-  `;
-  
-  isFlipped = false;
-}
-
-function flipCard() {
-  const fc = document.getElementById('flashcard');
-  isFlipped = !isFlipped;
-  if (isFlipped) fc.classList.add('flipped');
-  else fc.classList.remove('flipped');
-}
-
-function nextBrowse() {
-  if (browseIndex < browseCards.length - 1) {
-    browseIndex++;
-    renderBrowse();
-  }
-}
-
-function prevBrowse() {
-  if (browseIndex > 0) {
-    browseIndex--;
-    renderBrowse();
-  }
-}
-
-function markReviewed(cardId, rating) {
-  const p = getCardProgress(cardId);
-  const updated = FSRS.update(p, rating, Date.now());
-  progress[cardId] = updated;
-  saveProgress();
-  nextBrowse();
-}
-
-// ═══════════════════════════════════════════════════════════════════
-// SRS Study Session
-// ═══════════════════════════════════════════════════════════════════
 function startSRSSession() {
-  // Get all due cards (including new)
+  if (!deck) return;
   const dueCards = deck.cards.filter(c => isDue(c.id));
-  // Sort: new cards first (lower reps), then by due date
+  // Sort: new cards first, then by due date
   dueCards.sort((a, b) => {
     const ap = progress[a.id], bp = progress[b.id];
     if (!ap && !bp) return 0;
@@ -582,39 +518,71 @@ function startSRSSession() {
     return ap.due - bp.due;
   });
   
-  sessionCards = dueCards.slice(0, 100);
-  sessionIndex = 0;
-  currentView = 'study';
-  render();
-}
-
-function renderStudy() {
-  if (sessionIndex >= sessionCards.length) {
-    currentView = 'complete';
-    render();
+  if (dueCards.length === 0) {
+    // Nothing due — show a message
+    app.innerHTML = `
+      <div class="complete-screen">
+        <div class="emoji">✅</div>
+        <h2>All caught up!</h2>
+        <p>No cards are due right now. Come back later or browse themes to study new words.</p>
+        <div>
+          <button class="btn-primary" onclick="currentView='home';render()">Home</button>
+        </div>
+      </div>`;
     return;
   }
   
-  const card = sessionCards[sessionIndex];
+  cardSession = {
+    cards: dueCards.slice(0, 100),
+    index: 0,
+    isSRS: true,
+    backTarget: 'home',
+    backLabel: 'End',
+  };
+  currentView = 'card';
+  render();
+}
+
+function renderCard() {
+  const { cards, index, isSRS, backTarget, backLabel } = cardSession;
+  
+  if (index >= cards.length) {
+    // Session complete
+    const studied = index;
+    app.innerHTML = `
+      <div class="complete-screen">
+        <div class="emoji">🎉</div>
+        <h2>Session Complete!</h2>
+        <p>You reviewed ${studied} cards.</p>
+        <div>
+          ${isSRS ? '<button class="btn-primary" onclick="startSRSSession()">Review More</button>' : ''}
+          <button class="${isSRS ? 'btn-secondary' : 'btn-primary'}" onclick="currentView='${backTarget}';render()">Home</button>
+        </div>
+      </div>`;
+    return;
+  }
+  
+  const card = cards[index];
   const p = getCardProgress(card.id);
   
-  // Calculate preview intervals
-  const r1 = FSRS.update(p, 1, Date.now());
-  const r2 = FSRS.update(p, 2, Date.now());
-  const r3 = FSRS.update(p, 3, Date.now());
-  const r4 = FSRS.update(p, 4, Date.now());
+  // Calculate preview intervals for each rating
+  const now = Date.now();
+  const r1 = FSRS.update(p, 1, now);
+  const r2 = FSRS.update(p, 2, now);
+  const r3 = FSRS.update(p, 3, now);
+  const r4 = FSRS.update(p, 4, now);
   
-  const i1 = (r1.due - Date.now()) / (24 * 60 * 60 * 1000);
-  const i2 = (r2.due - Date.now()) / (24 * 60 * 60 * 1000);
-  const i3 = (r3.due - Date.now()) / (24 * 60 * 60 * 1000);
-  const i4 = (r4.due - Date.now()) / (24 * 60 * 60 * 1000);
+  const i1 = (r1.due - now) / (24 * 60 * 60 * 1000);
+  const i2 = (r2.due - now) / (24 * 60 * 60 * 1000);
+  const i3 = (r3.due - now) / (24 * 60 * 60 * 1000);
+  const i4 = (r4.due - now) / (24 * 60 * 60 * 1000);
   
   app.innerHTML = `
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
-      <button class="back-btn" onclick="if(confirm('End session?')){currentView='home';render()}">✕ End</button>
-      <span class="nav-info">${sessionIndex + 1} / ${sessionCards.length}</span>
+      <button class="back-btn" onclick="cardBack()">${backLabel || '← Back'}</button>
+      <span class="nav-info">${index + 1} / ${cards.length}</span>
     </div>
-    <div class="progress-bar"><div class="progress-fill" style="width:${((sessionIndex + 1) / sessionCards.length) * 100}%"></div></div>
+    <div class="progress-bar"><div class="progress-fill" style="width:${((index + 1) / cards.length) * 100}%"></div></div>
     <div class="card-container">
       <div class="flashcard" id="flashcard" onclick="flipCard()">
         <div class="flashcard-face">
@@ -634,47 +602,72 @@ function renderStudy() {
         <button class="audio-btn" onclick="event.stopPropagation();playCardAudio('${card.id}','pa',this)">🔊ਪੰ</button>
       </div>
     </div>
-    <div class="rating-row" id="rating-row" style="${isFlipped ? '' : 'visibility:hidden;'}">
-      <button class="rate-btn rate-again" onclick="rateCard('${card.id}',1)">
+    <div class="rating-row">
+      <button class="rate-btn rate-again" onclick="cardRate('${card.id}',1)">
         Again<span class="interval">${FSRS.formatInterval(i1)}</span>
       </button>
-      <button class="rate-btn rate-hard" onclick="rateCard('${card.id}',2)">
+      <button class="rate-btn rate-hard" onclick="cardRate('${card.id}',2)">
         Hard<span class="interval">${FSRS.formatInterval(i2)}</span>
       </button>
-      <button class="rate-btn rate-good" onclick="rateCard('${card.id}',3)">
+      <button class="rate-btn rate-good" onclick="cardRate('${card.id}',3)">
         Good<span class="interval">${FSRS.formatInterval(i3)}</span>
       </button>
-      <button class="rate-btn rate-easy" onclick="rateCard('${card.id}',4)">
+      <button class="rate-btn rate-easy" onclick="cardRate('${card.id}',4)">
         Easy<span class="interval">${FSRS.formatInterval(i4)}</span>
       </button>
+    </div>
+    <div class="card-nav">
+      <button class="nav-btn" onclick="cardPrev()" ${index === 0 ? 'disabled' : ''}>‹</button>
+      <span class="nav-info">Manual nav</span>
+      <button class="nav-btn" onclick="cardNext()">›</button>
     </div>
   `;
   
   isFlipped = false;
 }
 
-function rateCard(cardId, rating) {
+function cardRate(cardId, rating) {
   const p = getCardProgress(cardId);
   const updated = FSRS.update(p, rating, Date.now());
   progress[cardId] = updated;
   saveProgress();
-  sessionIndex++;
-  renderStudy();
+  cardSession.index++;
+  renderCard();
 }
 
-function renderComplete() {
-  const studiedThisSession = sessionIndex;
-  app.innerHTML = `
-    <div class="complete-screen">
-      <div class="emoji">🎉</div>
-      <h2>Session Complete!</h2>
-      <p>You reviewed ${studiedThisSession} cards.</p>
-      <div>
-        <button class="btn-primary" onclick="startSRSSession()">Review More</button>
-        <button class="btn-secondary" onclick="currentView='home';render()">Home</button>
-      </div>
-    </div>
-  `;
+function cardNext() {
+  if (cardSession.index < cardSession.cards.length - 1) {
+    cardSession.index++;
+    renderCard();
+  }
+}
+
+function cardPrev() {
+  if (cardSession.index > 0) {
+    cardSession.index--;
+    renderCard();
+  }
+}
+
+function cardBack() {
+  if (cardSession.isSRS) {
+    if (confirm('End session?')) {
+      currentView = cardSession.backTarget;
+      render();
+    }
+  } else {
+    currentView = cardSession.backTarget;
+    render();
+  }
+}
+
+// Keep old function names for backward compat
+function flipCard() {
+  const fc = document.getElementById('flashcard');
+  if (!fc) return;
+  isFlipped = !isFlipped;
+  if (isFlipped) fc.classList.add('flipped');
+  else fc.classList.remove('flipped');
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -707,10 +700,7 @@ function handleSearch(query) {
 }
 
 function showSearchCard(card) {
-  browseCards = [card];
-  browseIndex = 0;
-  currentView = 'browse';
-  render();
+  startBrowseSession([card], 'home', '← Home');
 }
 
 // ═══════════════════════════════════════════════════════════════════
