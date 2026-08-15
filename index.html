@@ -548,48 +548,10 @@ function playCardAudio(cardId, lang, btn) {
   playAudio(base, btn);
 }
 
-// Play example sentence via Web Speech API (speech synthesis)
-function playExampleAudio(text, lang, btn) {
-  if (!text || !window.speechSynthesis) {
-    console.log('playExampleAudio: no text or no speechSynthesis');
-    return;
-  }
-  
-  // Stop any current audio
-  if (currentAudio) {
-    try { currentAudio.pause(); } catch(e) {}
-    if (currentAudio._btn) currentAudio._btn.classList.remove('playing');
-  }
-  window.speechSynthesis.cancel();
-  
-  // Decode HTML entities from data attribute
-  var txt = document.createElement('textarea');
-  txt.innerHTML = text;
-  text = txt.value;
-  
-  var utter = new SpeechSynthesisUtterance(text);
-  utter.lang = lang === 'pa' ? 'pa-IN' : 'en-US';
-  utter.rate = 0.85;
-  utter.volume = 1.0;
-  
-  if (btn) btn.classList.add('playing');
-  utter.onend = function() { if (btn) btn.classList.remove('playing'); };
-  utter.onerror = function(e) { console.log('TTS error:', e); if (btn) btn.classList.remove('playing'); };
-  
-  // Try to find a matching voice
-  var voices = window.speechSynthesis.getVoices();
-  var match = voices.find(function(v) { return v.lang.startsWith(lang === 'pa' ? 'pa' : 'en'); });
-  if (match) utter.voice = match;
-  
-  // Small delay helps on iOS
-  setTimeout(function() {
-    window.speechSynthesis.speak(utter);
-  }, 50);
-  
-  currentAudio = { 
-    pause: function() { window.speechSynthesis.cancel(); },
-    _btn: btn 
-  };
+// Play example sentence audio from pre-generated gTTS files
+function playExampleAudio(cardId, lang, btn) {
+  const base = 'audio/ex_' + lang + '/' + cardId + '.mp3';
+  playAudio(base, btn);
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -856,8 +818,8 @@ function renderCard() {
       <div class="audio-row" style="justify-content:center; flex-wrap: wrap;">
         <button class="audio-btn" onclick="event.stopPropagation();playCardAudio('${card.id}','en',this)">🔊EN</button>
         <button class="audio-btn" onclick="event.stopPropagation();playCardAudio('${card.id}','pa',this)">🔊ਪੰ</button>
-        ${card.ex_en ? `<button class="audio-btn ex-btn" data-ex-text="${card.ex_en.replace(/"/g, '&quot;').replace(/</g, '&lt;')}" onclick="event.stopPropagation();playExampleAudio(this.dataset.exText,'en',this)">🔊Ex EN</button>` : ''}
-        ${card.ex_gur ? `<button class="audio-btn ex-btn" data-ex-text="${card.ex_gur.replace(/"/g, '&quot;').replace(/</g, '&lt;')}" onclick="event.stopPropagation();playExampleAudio(this.dataset.exText,'pa',this)">🔊Ex ਪੰ</button>` : ''}
+        ${card.ex_en ? `<button class="audio-btn ex-btn" onclick="event.stopPropagation();playExampleAudio('${card.id}','en',this)">🔊Ex EN</button>` : ''}
+        ${card.ex_gur ? `<button class="audio-btn ex-btn" onclick="event.stopPropagation();playExampleAudio('${card.id}','pa',this)">🔊Ex ਪੰ</button>` : ''}
       </div>
     </div>
     <div class="rating-row">
