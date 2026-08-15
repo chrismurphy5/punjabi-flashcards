@@ -98,6 +98,7 @@ body {
 .flashcard-face {
   position: absolute; inset: 0; padding: 32px 24px; display: flex; flex-direction: column;
   align-items: center; justify-content: center; backface-visibility: hidden; -webkit-backface-visibility: hidden;
+  overflow-y: auto; -webkit-overflow-scrolling: touch;
 }
 .flashcard-back { transform: rotateY(180deg); }
 .card-english { font-size: 28px; font-weight: 700; text-align: center; margin-bottom: 12px; }
@@ -879,8 +880,22 @@ function flipCard() {
   const fc = document.getElementById('flashcard');
   if (!fc) return;
   isFlipped = !isFlipped;
-  if (isFlipped) fc.classList.add('flipped');
-  else fc.classList.remove('flipped');
+  if (isFlipped) {
+    fc.classList.add('flipped');
+    // Grow card to fit back face content
+    const back = fc.querySelector('.flashcard-back');
+    if (back) {
+      // Temporarily make back visible to measure it
+      back.style.visibility = 'visible';
+      const contentHeight = back.scrollHeight;
+      if (contentHeight > 280) {
+        fc.style.minHeight = contentHeight + 'px';
+      }
+    }
+  } else {
+    fc.classList.remove('flipped');
+    fc.style.minHeight = '280px';
+  }
 }
 
 // ═══════════════════════════════════════════════════════════════════
