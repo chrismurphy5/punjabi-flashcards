@@ -106,6 +106,14 @@ body {
 .card-example { font-size: 14px; color: var(--muted); text-align: center; margin-top: 12px; line-height: 1.5; }
 .card-example-gur { font-size: 16px; color: var(--text); margin-top: 4px; }
 .card-hint { font-size: 12px; color: var(--muted); margin-top: 20px; }
+.card-note-input {
+  width: 90%; margin-top: 16px; padding: 8px 12px; border-radius: 8px;
+  border: 1px solid var(--border); background: rgba(0,0,0,0.2); color: var(--text);
+  font-size: 13px; line-height: 1.4; resize: vertical; min-height: 36px; max-height: 120px;
+  font-family: inherit;
+}
+.card-note-input:focus { outline: none; border-color: var(--accent); }
+.card-note-input::placeholder { color: var(--muted); font-size: 12px; }
 
 /* Audio buttons */
 .audio-row { display: flex; gap: 10px; margin-top: 12px; }
@@ -280,6 +288,7 @@ const FSRS = {
 const STORAGE_KEY = 'punjabi_flashcards_v1';
 let deck = null;
 let progress = {};
+let notes = {};
 let currentView = 'home';
 let currentSection = null;
 let currentCategory = null;
@@ -294,10 +303,27 @@ function loadProgress() {
     const saved = localStorage.getItem(STORAGE_KEY);
     progress = saved ? JSON.parse(saved) : {};
   } catch { progress = {}; }
+  try {
+    notes = JSON.parse(localStorage.getItem(STORAGE_KEY + '_notes') || '{}');
+  } catch { notes = {}; }
 }
 
 function saveProgress() {
   localStorage.setItem(STORAGE_KEY, JSON.stringify(progress));
+  localStorage.setItem(STORAGE_KEY + '_notes', JSON.stringify(notes));
+}
+
+function getCardNote(cardId) {
+  return notes[cardId] || '';
+}
+
+function setCardNote(cardId, text) {
+  if (text.trim()) {
+    notes[cardId] = text.trim();
+  } else {
+    delete notes[cardId];
+  }
+  saveProgress();
 }
 
 function getCardProgress(cardId) {
@@ -595,6 +621,10 @@ function renderCard() {
           ${card.ex_en ? `<div class="card-example">${card.ex_en}</div>` : ''}
           ${card.ex_gur ? `<div class="card-example card-example-gur">${card.ex_gur}</div>` : ''}
           ${card.ex_rom ? `<div class="card-example">${card.ex_rom}</div>` : ''}
+          <textarea class="card-note-input" placeholder="Notes (alt spellings, usage tips...)" 
+            onclick="event.stopPropagation()" 
+            oninput="setCardNote('${card.id}', this.value)"
+          >${getCardNote(card.id)}</textarea>
         </div>
       </div>
       <div class="audio-row" style="justify-content:center;">
