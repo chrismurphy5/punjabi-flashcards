@@ -1557,6 +1557,13 @@ function showSearchCard(card) {
 // ═══════════════════════════════════════════════════════════════════
 // Init
 // ═══════════════════════════════════════════════════════════════════
+// Force SW update on every launch
+if ('serviceWorker' in navigator) {
+  navigator.serviceWorker.register('sw.js').then(reg => {
+    reg.update();
+  });
+}
+
 async function init() {
   loadProgress();
   loadCustomCards();
