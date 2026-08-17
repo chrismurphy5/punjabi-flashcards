@@ -200,6 +200,13 @@ body {
 .search-box:focus { outline: none; border-color: var(--accent); }
 .search-box::placeholder { color: var(--muted); }
 
+@keyframes toastFade {
+  0% { opacity: 0; transform: translateX(-50%) translateY(10px); }
+  15% { opacity: 1; transform: translateX(-50%) translateY(0); }
+  70% { opacity: 1; }
+  100% { opacity: 0; transform: translateX(-50%) translateY(-10px); }
+}
+
 /* Auto-play bar */
 .autoplay-bar {
   display: flex; align-items: center; gap: 8px;
@@ -1493,15 +1500,38 @@ function renderCard() {
 }
 
 function cardRate(cardId, rating) {
+  const btn = event ? event.target.closest('.rate-btn') : null;
   const p = getCardProgress(cardId);
   const updated = FSRS.update(p, rating, Date.now());
   progress[cardId] = updated;
   saveProgress();
-  // Only auto-advance in manual mode; auto-play handles its own progression
-  if (!autoplay.active) {
+
+  const labels = { 1: 'Again', 2: 'Hard', 3: 'Good', 4: 'Easy' };
+  const label = labels[rating];
+
+  if (autoplay.active) {
+    // Visual feedback: flash the button + toast
+    if (btn) {
+      btn.style.transform = 'scale(0.92)';
+      btn.style.opacity = '0.6';
+      setTimeout(() => {
+        btn.style.transform = '';
+        btn.style.opacity = '';
+      }, 200);
+    }
+    showRatingToast('✓ ' + label + ' saved');
+  } else {
     cardSession.index++;
     renderCard();
   }
+}
+
+function showRatingToast(text) {
+  var msg = document.createElement('div');
+  msg.style.cssText = 'position:fixed;bottom:140px;left:50%;transform:translateX(-50%);background:var(--green);color:white;padding:8px 18px;border-radius:20px;font-size:13px;font-weight:600;z-index:999;box-shadow:0 4px 12px rgba(0,0,0,0.3);pointer-events:none;animation:toastFade 1.5s forwards;';
+  msg.textContent = text;
+  document.body.appendChild(msg);
+  setTimeout(function() { msg.remove(); }, 1500);
 }
 
 function cardNext() {
