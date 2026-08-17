@@ -200,6 +200,31 @@ body {
 .search-box:focus { outline: none; border-color: var(--accent); }
 .search-box::placeholder { color: var(--muted); }
 
+/* Auto-play bar */
+.autoplay-bar {
+  display: flex; align-items: center; gap: 8px;
+  background: var(--card); border-radius: var(--radius); padding: 10px 12px;
+  margin-bottom: 14px; border: 1px solid var(--border);
+}
+.autoplay-btn {
+  background: var(--accent); color: white; border: none;
+  padding: 10px 18px; border-radius: var(--radius); font-size: 14px; font-weight: 600;
+  cursor: pointer; white-space: nowrap; transition: all 0.2s;
+}
+.autoplay-btn:active { opacity: 0.8; }
+.autoplay-btn.stop { background: var(--red); }
+.autoplay-btn.pause { background: var(--orange); }
+.autoplay-label { font-size: 12px; color: var(--muted); }
+.autoplay-select {
+  background: var(--bg); color: var(--text); border: 1px solid var(--border);
+  border-radius: 8px; padding: 6px 10px; font-size: 13px; font-family: inherit; cursor: pointer;
+}
+.autoplay-select:focus { outline: none; border-color: var(--accent); }
+.autoplay-status {
+  font-size: 12px; color: var(--muted); margin-left: auto;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 140px;
+}
+
 /* Hidden */
 .hidden { display: none !important; }
 </style>
@@ -1079,6 +1104,17 @@ let cardSession = {
   backLabel: '',
 };
 
+// ═══════════════════════════════════════════════════════════════════
+// Auto-Play Mode
+// ═══════════════════════════════════════════════════════════════════
+let autoplay = {
+  active: false,
+  paused: false,
+  pauseSec: 2,         // seconds between audio clips
+  timerId: null,       // setTimeout handle for the current pause
+  playing: false,      // true while audio is actually playing
+};
+
 function startBrowseSession(cards, backTarget, backLabel) {
   cardSession = { cards, index: 0, isSRS: false, backTarget, backLabel };
   currentView = 'card';
@@ -1122,6 +1158,194 @@ function startSRSSession() {
   render();
 }
 
+// ═══════════════════════════════════════════════════════════════════
+// Auto-Play Logic
+// ═══════════════════════════════════════════════════════════════════
+
+// Resolve the audio URL for a card+lang, or null if none.
+function getAudioSrc(cardId, lang) {
+  if (cardId.startsWith('custom-')) {
+    // Custom cards use IndexedDB blobs; we can't easily resolve a URL
+    // synchronously. For auto-play, we'll skip custom audio blobs and
+    // only play file-based audio. Custom cards without file audio = skip.
+    return null;
+  }
+  return 'audio/' + lang + '/' + cardId + '.mp3';
+}
+
+// Play an audio src and resolve when it finishes (or on error).
+function playAudioAsync(src) {
+  return new Promise((resolve) => {
+    if (!src) { resolve(); return; }
+    if (currentAudio) {
+      currentAudio.pause();
+      if (currentAudio._btn) currentAudio._btn.classList.remove('playing');
+    }
+    const audio = new Audio(src);
+    currentAudio = audio;
+    audio.onended = () => resolve();
+    audio.onerror = () => resolve();
+    audio.play().catch(() => resolve());
+  });
+}
+
+// Play a custom card audio from IndexedDB, async, resolves when done.
+async function playCustomAudioAsync(cardId, lang) {
+  const side = lang;  // 'en' or 'pa'
+  try {
+    const blob = await getCustomAudio(cardId, side);
+    if (!blob) return false;
+    if (currentAudio) {
+      currentAudio.pause();
+      if (currentAudio._btn) currentAudio._btn.classList.remove('playing');
+    }
+    const url = URL.createObjectURL(blob);
+    await new Promise((resolve) => {
+      const audio = new Audio(url);
+      currentAudio = audio;
+      audio.onended = () => { URL.revokeObjectURL(url); resolve(); };
+      audio.onerror = () => { URL.revokeObjectURL(url); resolve(); };
+      audio.play().catch(() => { URL.revokeObjectURL(url); resolve(); });
+    });
+    return true;
+  } catch { return false; }
+}
+
+// Sleep helper that respects pause state.
+function autoplaySleep(ms) {
+  return new Promise((resolve) => {
+    autoplay.timerId = setTimeout(() => {
+      autoplay.timerId = null;
+      resolve();
+    }, ms);
+  });
+}
+
+// Main auto-play loop. Iterates through all cards in the current session.
+async function startAutoplay() {
+  autoplay.active = true;
+  autoplay.paused = false;
+  updateAutoplayUI();
+
+  // Work on a copy of the card list starting from current index.
+  const cards = cardSession.cards;
+  let i = cardSession.index;
+
+  while (autoplay.active && i < cards.length) {
+    if (autoplay.paused) {
+      await autoplaySleep(200);
+      continue;
+    }
+
+    const card = cards[i];
+
+    // Move to this card if we're not already on it.
+    if (cardSession.index !== i) {
+      cardSession.index = i;
+      renderCard();  // re-render to show current card
+      updateAutoplayUI();  // restore autoplay button state after re-render
+    }
+
+    // Update status text.
+    setAutoplayStatus('▶ EN…');
+
+    // Play English audio.
+    if (card.id.startsWith('custom-')) {
+      await playCustomAudioAsync(card.id, 'en');
+    } else {
+      await playAudioAsync(getAudioSrc(card.id, 'en'));
+    }
+
+    if (!autoplay.active) break;
+
+    // Pause between EN and PA.
+    setAutoplayStatus(`⏸ ${autoplay.pauseSec}s…`);
+    await autoplaySleep(autoplay.pauseSec * 1000);
+    if (!autoplay.active) break;
+
+    if (autoplay.paused) { continue; }
+
+    // Play Punjabi audio.
+    setAutoplayStatus('▶ PA…');
+    if (card.id.startsWith('custom-')) {
+      await playCustomAudioAsync(card.id, 'pa');
+    } else {
+      await playAudioAsync(getAudioSrc(card.id, 'pa'));
+    }
+
+    if (!autoplay.active) break;
+
+    // Pause before next card.
+    setAutoplayStatus(`⏸ ${autoplay.pauseSec}s → next…`);
+    await autoplaySleep(autoplay.pauseSec * 1000);
+    if (!autoplay.active) break;
+
+    i++;
+  }
+
+  // If we finished all cards naturally, show the complete screen.
+  if (autoplay.active && i >= cards.length) {
+    autoplay.active = false;
+    setAutoplayStatus('');
+    renderCard();  // shows session complete if applicable
+  }
+
+  updateAutoplayUI();
+}
+
+function toggleAutoplay() {
+  if (!autoplay.active) {
+    startAutoplay();
+  } else {
+    autoplay.paused = !autoplay.paused;
+    if (autoplay.paused) {
+      // Pause any currently playing audio.
+      if (currentAudio) currentAudio.pause();
+      setAutoplayStatus('⏸ Paused');
+    } else {
+      setAutoplayStatus('▶ Resuming…');
+    }
+    updateAutoplayUI();
+  }
+}
+
+function stopAutoplay() {
+  autoplay.active = false;
+  autoplay.paused = false;
+  if (autoplay.timerId) { clearTimeout(autoplay.timerId); autoplay.timerId = null; }
+  if (currentAudio) { currentAudio.pause(); }
+  setAutoplayStatus('');
+  updateAutoplayUI();
+}
+
+function setAutoplayStatus(text) {
+  const el = document.getElementById('autoplay-status');
+  if (el) el.textContent = text;
+}
+
+function updateAutoplayUI() {
+  const bar = document.getElementById('autoplay-bar');
+  if (!bar) return;
+  const btn = document.getElementById('autoplay-toggle-btn');
+  const stopBtn = document.getElementById('autoplay-stop-btn');
+  const sel = document.getElementById('autoplay-pause-select');
+  if (!autoplay.active) {
+    if (btn) { btn.textContent = '▶ Auto-Play'; btn.className = 'autoplay-btn'; }
+    if (stopBtn) stopBtn.style.display = 'none';
+    setAutoplayStatus('');
+  } else {
+    if (btn) {
+      btn.textContent = autoplay.paused ? '▶ Resume' : '⏸ Pause';
+      btn.className = 'autoplay-btn ' + (autoplay.paused ? 'pause' : 'stop');
+    }
+    if (stopBtn) stopBtn.style.display = '';
+  }
+}
+
+function onAutoplayPauseChange(val) {
+  autoplay.pauseSec = parseInt(val, 10);
+}
+
 function renderCard() {
   const { cards, index, isSRS, backTarget, backLabel } = cardSession;
   
@@ -1162,6 +1386,19 @@ function renderCard() {
       <span class="nav-info">${index + 1} / ${cards.length}</span>
     </div>
     <div class="progress-bar"><div class="progress-fill" style="width:${((index + 1) / cards.length) * 100}%"></div></div>
+    <div class="autoplay-bar" id="autoplay-bar">
+      <button class="autoplay-btn" id="autoplay-toggle-btn" onclick="toggleAutoplay()">▶ Auto-Play</button>
+      <span class="autoplay-label">Pause:</span>
+      <select class="autoplay-select" id="autoplay-pause-select" onchange="onAutoplayPauseChange(this.value)">
+        <option value="1" ${autoplay.pauseSec === 1 ? 'selected' : ''}>1s</option>
+        <option value="2" ${autoplay.pauseSec === 2 ? 'selected' : ''}>2s</option>
+        <option value="3" ${autoplay.pauseSec === 3 ? 'selected' : ''}>3s</option>
+        <option value="5" ${autoplay.pauseSec === 5 ? 'selected' : ''}>5s</option>
+        <option value="10" ${autoplay.pauseSec === 10 ? 'selected' : ''}>10s</option>
+      </select>
+      <button class="autoplay-btn stop" onclick="stopAutoplay()" style="background:var(--red);display:none;" id="autoplay-stop-btn">⏹</button>
+      <span class="autoplay-status" id="autoplay-status"></span>
+    </div>
     <div class="card-container">
       <div class="flashcard" id="flashcard" onclick="flipCard()">
         <div class="flashcard-face">
@@ -1249,6 +1486,7 @@ function cardPrev() {
 }
 
 function cardBack() {
+  stopAutoplay();
   if (cardSession.isSRS) {
     if (confirm('End session?')) {
       currentView = cardSession.backTarget;
