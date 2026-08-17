@@ -1174,15 +1174,30 @@ function getAudioSrc(cardId, lang) {
 }
 
 // Play an audio src and resolve when it finishes (or on error).
+// Uses a persistent Audio element for iOS compatibility — reusing the
+// same element that was unlocked by the initial user gesture.
+let autoplayAudioEl = null;
+
+function getAutoplayAudioEl() {
+  if (!autoplayAudioEl) {
+    autoplayAudioEl = new Audio();
+    autoplayAudioEl.preload = 'auto';
+  }
+  return autoplayAudioEl;
+}
+
 function playAudioAsync(src) {
   return new Promise((resolve) => {
     if (!src) { resolve(); return; }
-    if (currentAudio) {
+    // Stop any currently playing audio
+    if (currentAudio && currentAudio !== autoplayAudioEl) {
       currentAudio.pause();
       if (currentAudio._btn) currentAudio._btn.classList.remove('playing');
     }
-    const audio = new Audio(src);
+    const audio = getAutoplayAudioEl();
     currentAudio = audio;
+    audio.src = src;
+    audio.load();
     audio.onended = () => resolve();
     audio.onerror = () => resolve();
     audio.play().catch(() => resolve());
@@ -1244,6 +1259,8 @@ async function startAutoplay() {
       cardSession.index = i;
       renderCard();  // re-render to show current card
       updateAutoplayUI();  // restore autoplay button state after re-render
+      // Small delay to let iOS settle after DOM rebuild before playing audio
+      await autoplaySleep(150);
     }
 
     // Update status text.
@@ -1295,6 +1312,19 @@ async function startAutoplay() {
 
 function toggleAutoplay() {
   if (!autoplay.active) {
+    // Unlock the persistent audio element within the user gesture.
+    // iOS requires play() to be called from a user gesture at least once.
+    const audio = getAutoplayAudioEl();
+    audio.src = 'audio/en/pa-00001.mp3';
+    audio.volume = 0;
+    audio.play().then(() => {
+      audio.pause();
+      audio.currentTime = 0;
+      audio.volume = 1;
+    }).catch(() => {
+      // If unlock fails, try anyway — the first real play might still work
+      audio.volume = 1;
+    });
     startAutoplay();
   } else {
     autoplay.paused = !autoplay.paused;
