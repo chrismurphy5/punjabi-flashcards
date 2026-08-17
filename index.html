@@ -1497,11 +1497,15 @@ function cardRate(cardId, rating) {
   const updated = FSRS.update(p, rating, Date.now());
   progress[cardId] = updated;
   saveProgress();
-  cardSession.index++;
-  renderCard();
+  // Only auto-advance in manual mode; auto-play handles its own progression
+  if (!autoplay.active) {
+    cardSession.index++;
+    renderCard();
+  }
 }
 
 function cardNext() {
+  if (autoplay.active) return;  // auto-play controls navigation when active
   if (cardSession.index < cardSession.cards.length - 1) {
     cardSession.index++;
     renderCard();
@@ -1509,6 +1513,7 @@ function cardNext() {
 }
 
 function cardPrev() {
+  if (autoplay.active) return;  // auto-play controls navigation when active
   if (cardSession.index > 0) {
     cardSession.index--;
     renderCard();
