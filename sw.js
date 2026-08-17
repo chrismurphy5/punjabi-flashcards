@@ -1,5 +1,5 @@
 // Service Worker for Punjabi Flashcards PWA
-const CACHE_NAME = 'punjabi-flashcards-v7';
+const CACHE_NAME = 'punjabi-flashcards-v8';
 const ASSETS = [
   './',
   './index.html',
