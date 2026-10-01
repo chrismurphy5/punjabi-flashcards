@@ -987,7 +987,7 @@ function playExampleAudio(cardId, lang, btn) {
 //   translate_a/single  (CORS-enabled, returns trans + translit) — tested working from this origin
 //   inputtools request  (CORS-enabled transliteration, romanized → Gurmukhi)
 //   translate_tts       (no CORS, but <audio src> media loads bypass CORS)
-const TRANSLATE_TR_CACHES = 'punjabi_translate_tr';  // localStorage key for offline translations
+const TRANSLATE_TR_CACHES = 'punjabi_translate_tr_v2';  // localStorage key for offline translations (v2: v1 could hold poisoned empty entries)
 const TRANSLATE_TTL_MS = 1000 * 60 * 60 * 24 * 30;   // 30 days
 let trDirection = 'en2pa'; // 'en2pa' | 'pa2en'
 let trBusy = false;
@@ -1070,32 +1070,51 @@ async function trPaste() {
 }
 
 // ── Google Translate unofficial API helpers ─────────────────────────
+// Host fallback chain: these unofficial endpoints rate-limit per IP.
+// On cellular (CGNAT) your IP is shared with thousands of other users,
+// so 429s / empty responses happen intermittently. We try hosts in
+// order and give the last error a specific message.
+const TR_HOSTS = ['translate.googleapis.com', 'clients5.google.com'];
+
 // dj=1 JSON mode. NOTE: use p.append('dt','t') AND p.append('dt','rm') —
 // passing {dt:'t', dt:'rm'} as an object to URLSearchParams OVERWRITES the
 // first dt with the second and silently drops the translation text.
 async function gTranslate(sl, tl, q) {
-  const p = new URLSearchParams();
-  p.append('client', 'gtx');
-  p.append('dj', '1');
-  p.append('sl', sl);
-  p.append('tl', tl);
-  p.append('dt', 't');
-  p.append('dt', 'rm');
-  p.append('q', q);
-  const r = await fetch('https://translate.googleapis.com/translate_a/single?' + p.toString());
-  if (!r.ok) throw new Error('Translate HTTP ' + r.status);
-  const j = await r.json();
-  let trans = '';
-  let translit = '';      // romanization of the TARGET text
-  let srcTranslit = '';   // romanization of the SOURCE text (pa→en: this is the Punjabi romanization)
-  if (j.sentences) {
-    for (const s of j.sentences) {
-      if (s.trans) trans += s.trans;
-      if (s.translit) translit += s.translit;
-      if (s.src_translit) srcTranslit += s.src_translit;
+  let lastErr = null;
+  for (const host of TR_HOSTS) {
+    try {
+      const p = new URLSearchParams();
+      p.append('client', 'gtx');
+      p.append('dj', '1');
+      p.append('sl', sl);
+      p.append('tl', tl);
+      p.append('dt', 't');
+      p.append('dt', 'rm');
+      p.append('q', q);
+      const r = await fetch('https://' + host + '/translate_a/single?' + p.toString());
+      if (r.status === 429) { lastErr = 'rate'; continue; }  // try next host
+      if (!r.ok) { lastErr = 'http' + r.status; continue; }
+      const j = await r.json();
+      let trans = '';
+      let translit = '';      // romanization of the TARGET text
+      let srcTranslit = '';   // romanization of the SOURCE text (pa→en: this is the Punjabi romanization)
+      if (j.sentences) {
+        for (const the_s of j.sentences) {
+          if (the_s.trans) trans += the_s.trans;
+          if (the_s.translit) translit += the_s.translit;
+          if (the_s.src_translit) srcTranslit += the_s.src_translit;
+        }
+      }
+      if (!trans && !translit) { lastErr = 'empty'; continue; }  // empty response — try next host
+      return { trans, translit, srcTranslit };
+    } catch (e) {
+      lastErr = 'network';
+      continue;  // fetch itself failed — try next host
     }
   }
-  return { trans, translit, srcTranslit };
+  const err = new Error(lastErr || 'all hosts failed');
+  err.kind = lastErr;
+  throw err;
 }
 
 // Romanized Punjabi → Gurmukhi (Google InputTools transliteration).
@@ -1125,14 +1144,15 @@ async function gTransliterate(text) {
 // Google TTS URL (no CORS header, but <audio src> loads play fine —
 // same pattern as every gTTS web player; verified for both 'pa' and 'en').
 // Limit ~200 chars per request; longer text must be split into chunks.
-function ttsUrl(text, lang, slow) {
+// translate.google.com and clients5.google.com both serve this endpoint.
+function ttsUrl(text, lang, slow, host) {
   const p = new URLSearchParams();
   p.append('ie', 'UTF-8');
   p.append('q', text);
   p.append('tl', lang);
   p.append('client', 'tw-ob');
   if (slow) p.append('ttsspeed', '0.24');
-  return 'https://translate.google.com/translate_tts?' + p.toString();
+  return 'https://' + (host || 'translate.google.com') + '/translate_tts?' + p.toString();
 }
 
 // Split text into <=200-char chunks on word boundaries for TTS.
@@ -1151,7 +1171,8 @@ function ttsChunks(text) {
 }
 
 // Play gTTS URL on the persistent audio element (iOS-safe pattern).
-function trPlayUrl(url, btn) {
+// If the primary host fails (media error 4), retry once on the fallback host.
+function trPlayUrl(url, btn, fallbackText, lang, slow) {
   if (currentAudio) {
     currentAudio.pause();
     if (currentAudio._btn) currentAudio._btn.classList.remove('playing');
@@ -1163,8 +1184,19 @@ function trPlayUrl(url, btn) {
   audio._btn = btn;
   if (btn) btn.classList.add('playing');
   audio.onended = () => { if (btn) btn.classList.remove('playing'); };
-  audio.onerror = () => { if (btn) btn.classList.remove('playing'); showFlash('Audio failed'); };
-  audio.play().catch(() => { if (btn) btn.classList.remove('playing'); });
+  audio.onerror = () => {
+    if (btn) btn.classList.remove('playing');
+    // Retry once on the fallback host, then give up honestly
+    if (fallbackText && !audio._retried) {
+      audio._retried = true;
+      trPlayUrl(ttsUrl(fallbackText, lang, slow, 'clients5.google.com'), btn);
+    } else {
+      showFlash('Audio unavailable right now — tap the speaker to retry');
+    }
+  };
+  audio.play().catch(() => {
+    if (btn) btn.classList.remove('playing');
+  });
 }
 
 // ── Cache (offline reuse of recent translations) ────────────────────
@@ -1246,10 +1278,12 @@ async function trGo(autoPlay) {
         rom = rom || plainRom(t.srcTranslit) || '';
         result = { en: t.trans, gur: gur, rom: rom };
       }
-      trCachePut(trCacheKey(trDirection, '', q), result);
     }
 
     if (!result.gur && !result.en) throw new Error('No translation returned');
+    // Only cache results that actually have content — caching an empty
+    // response would poison this phrase for 30 days.
+    if (result.gur || result.en) trCachePut(trCacheKey(trDirection, '', q), result);
     trRenderResult(result, trDirection);
 
     // Auto-play Punjabi audio after translating (unless autoPlay === false)
@@ -1258,14 +1292,25 @@ async function trGo(autoPlay) {
       if (result.gur.length > 200) {
         trSpeakLong(result.gur, 'pa', false, document.getElementById('tr-pa-btn'));
       } else {
-        trPlayUrl(ttsUrl(result.gur, 'pa'), document.getElementById('tr-pa-btn'));
+        trPlayUrl(ttsUrl(result.gur, 'pa'), document.getElementById('tr-pa-btn'), result.gur, 'pa');
       }
     } else {
       trSetStatus('');
     }
   } catch (e) {
     trSetStatus('');
-    showFlash('Translation failed — check connection');
+    // Honest error message instead of blaming the connection for everything
+    if (e && e.kind === 'rate') {
+      showFlash('Google is rate-limiting this network — try again in a minute, or switch to Wi-Fi');
+    } else if (e && e.kind === 'empty') {
+      showFlash('Google returned an empty result — tap Translate again');
+    } else if (!navigator.onLine) {
+      showFlash('You are offline — recent translations still work from cache');
+    } else if (e && e.kind === 'network') {
+      showFlash('Could not reach Google — check connection or try Wi-Fi');
+    } else {
+      showFlash('Translation failed — tap Translate to retry');
+    }
     console.log('Translate error:', e);
   } finally {
     trBusy = false;
@@ -1341,10 +1386,10 @@ function trSpeak(btn) {
   // Each button carries exactly one payload — gur or en
   if (gur) {
     if (gur.length > 200) { trSpeakLong(gur, 'pa', slow, btn); }
-    else { trPlayUrl(ttsUrl(gur, 'pa', slow), btn); }
+    else { trPlayUrl(ttsUrl(gur, 'pa', slow), btn, gur, 'pa', slow); }
   } else if (en) {
     if (en.length > 200) { trSpeakLong(en, 'en', slow, btn); }
-    else { trPlayUrl(ttsUrl(en, 'en', slow), btn); }
+    else { trPlayUrl(ttsUrl(en, 'en', slow), btn, en, 'en', slow); }
   }
 }
 
