@@ -2,6 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
+<meta name="referrer" content="no-referrer">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, user-scalable=no">
 <title>Punjabi Flashcards</title>
 <meta name="apple-mobile-web-app-capable" content="yes">
@@ -231,6 +232,25 @@ body {
   font-size: 12px; color: var(--muted); margin-left: auto;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 140px;
 }
+
+/* Translate & Speak */
+.dir-row { display: flex; gap: 8px; margin-bottom: 14px; }
+.dir-btn {
+  flex: 1; padding: 10px 8px; border-radius: var(--radius);
+  background: var(--card); border: 2px solid transparent; color: var(--muted);
+  font-size: 13px; font-weight: 600; cursor: pointer; transition: all 0.2s;
+}
+.dir-btn.active { border-color: var(--accent); color: var(--text); background: var(--card-hover); }
+.tr-status { font-size: 13px; color: var(--muted); margin-top: 8px; min-height: 18px; }
+.tr-result {
+  background: var(--card); border-radius: var(--radius); border: 1px solid var(--border);
+  padding: 20px 16px; margin-top: 16px;
+}
+.tr-label { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 4px; }
+.tr-en { font-size: 18px; font-weight: 600; margin-bottom: 14px; }
+.tr-gur { font-size: 30px; font-weight: 700; margin-bottom: 6px; line-height: 1.4; }
+.tr-rom { font-size: 18px; color: var(--accent); margin-bottom: 16px; }
+.tr-note { font-size: 12px; color: var(--muted); margin-bottom: 10px; }
 
 /* Hidden */
 .hidden { display: none !important; }
@@ -959,6 +979,467 @@ function playExampleAudio(cardId, lang, btn) {
 }
 
 // ═══════════════════════════════════════════════════════════════════
+// Translate & Speak (Google Translate unofficial API)
+// ═══════════════════════════════════════════════════════════════════
+// Type or speak any English word/phrase → Gurmukhi + romanized + audio.
+// Also works reverse: Gurmukhi or romanized Punjabi → English.
+// Uses:
+//   translate_a/single  (CORS-enabled, returns trans + translit) — tested working from this origin
+//   inputtools request  (CORS-enabled transliteration, romanized → Gurmukhi)
+//   translate_tts       (no CORS, but <audio src> media loads bypass CORS)
+const TRANSLATE_TR_CACHES = 'punjabi_translate_tr';  // localStorage key for offline translations
+const TRANSLATE_TTL_MS = 1000 * 60 * 60 * 24 * 30;   // 30 days
+let trDirection = 'en2pa'; // 'en2pa' | 'pa2en'
+let trBusy = false;
+let trRecognition = null;
+let trListening = false;
+
+function renderTranslate() {
+  app.innerHTML = `
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
+      <button class="back-btn" onclick="trLeave()">← Home</button>
+      <span style="font-size:16px;font-weight:600;">Translate & Speak</span>
+    </div>
+
+    <div class="dir-row">
+      <div class="dir-btn ${trDirection === 'en2pa' ? 'active' : ''}" onclick="trSetDirection('en2pa')">English → Punjabi</div>
+      <div class="dir-btn ${trDirection === 'pa2en' ? 'active' : ''}" onclick="trSetDirection('pa2en')">Punjabi → English</div>
+    </div>
+
+    <textarea class="create-input" id="tr-input" rows="3" placeholder="${trDirection === 'en2pa' ? 'Type any English word or phrase...' : 'Gurmukhi or romanized Punjabi...'}"
+      onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();trGo();}"></textarea>
+
+    <div class="audio-row" style="margin-top:12px;align-items:center;">
+      <button class="autoplay-btn" id="tr-go-btn" onclick="trGo()">Translate</button>
+      <button class="audio-btn" id="tr-mic-btn" title="Speak" onclick="trToggleMic(this)">🎤</button>
+      <button class="audio-btn" id="tr-paste-btn" title="Paste" onclick="trPaste()">📋</button>
+      <button class="audio-btn" id="tr-clear-btn" title="Clear" onclick="trClear()">✕</button>
+    </div>
+    <div class="tr-status" id="tr-status"></div>
+    <div id="tr-result"></div>
+  `;
+  const inp = document.getElementById('tr-input');
+  if (inp) {
+    inp.focus();
+    if (trRecognition) trRecognition = null;
+  }
+}
+
+function trSetDirection(d) {
+  // Stop an active mic session — its result would go to the wrong language
+  if (trRecognition && trListening) {
+    try { trRecognition.stop(); } catch {}
+  }
+  trDirection = d;
+  renderTranslate();
+}
+
+// Leave the screen: stop any active mic session before re-rendering
+function trLeave() {
+  if (trRecognition && trListening) {
+    try { trRecognition.stop(); } catch {}
+  }
+  if (currentAudio) currentAudio.pause();
+  currentView = 'home';
+  render();
+}
+
+function trSetStatus(text) {
+  const el = document.getElementById('tr-status');
+  if (el) el.textContent = text;
+}
+
+function trClear() {
+  const inp = document.getElementById('tr-input');
+  if (inp) inp.value = '';
+  const res = document.getElementById('tr-result');
+  if (res) res.innerHTML = '';
+  trSetStatus('');
+}
+
+async function trPaste() {
+  try {
+    const t = await navigator.clipboard.readText();
+    if (!t) { showFlash('Clipboard is empty'); return; }
+    const inp = document.getElementById('tr-input');
+    if (inp) inp.value = t.trim();
+    trSetStatus('Pasted');
+  } catch {
+    showFlash('Clipboard unavailable — long-press the field to paste');
+  }
+}
+
+// ── Google Translate unofficial API helpers ─────────────────────────
+// dj=1 JSON mode. NOTE: use p.append('dt','t') AND p.append('dt','rm') —
+// passing {dt:'t', dt:'rm'} as an object to URLSearchParams OVERWRITES the
+// first dt with the second and silently drops the translation text.
+async function gTranslate(sl, tl, q) {
+  const p = new URLSearchParams();
+  p.append('client', 'gtx');
+  p.append('dj', '1');
+  p.append('sl', sl);
+  p.append('tl', tl);
+  p.append('dt', 't');
+  p.append('dt', 'rm');
+  p.append('q', q);
+  const r = await fetch('https://translate.googleapis.com/translate_a/single?' + p.toString());
+  if (!r.ok) throw new Error('Translate HTTP ' + r.status);
+  const j = await r.json();
+  let trans = '';
+  let translit = '';      // romanization of the TARGET text
+  let srcTranslit = '';   // romanization of the SOURCE text (pa→en: this is the Punjabi romanization)
+  if (j.sentences) {
+    for (const s of j.sentences) {
+      if (s.trans) trans += s.trans;
+      if (s.translit) translit += s.translit;
+      if (s.src_translit) srcTranslit += s.src_translit;
+    }
+  }
+  return { trans, translit, srcTranslit };
+}
+
+// Romanized Punjabi → Gurmukhi (Google InputTools transliteration).
+// Returns Gurmukhi string, or null if unavailable.
+async function gTransliterate(text) {
+  try {
+    const p = new URLSearchParams();
+    p.append('text', text);
+    p.append('itc', 'pa-t-i0-und');
+    p.append('num', '5');
+    p.append('cp', '0');
+    p.append('cs', '1');
+    p.append('ie', 'utf-8');
+    p.append('oe', 'utf-8');
+    const r = await fetch('https://inputtools.google.com/request?' + p.toString());
+    const j = await r.json();
+    // Response: ["SUCCESS", [[text, [candidates...]]]]
+    if (j && j[0] === 'SUCCESS' && j[1] && j[1][0] && j[1][0][1] && j[1][0][1].length > 0) {
+      return j[1][0][1][0];
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+// Google TTS URL (no CORS header, but <audio src> loads play fine —
+// same pattern as every gTTS web player; verified for both 'pa' and 'en').
+// Limit ~200 chars per request; longer text must be split into chunks.
+function ttsUrl(text, lang, slow) {
+  const p = new URLSearchParams();
+  p.append('ie', 'UTF-8');
+  p.append('q', text);
+  p.append('tl', lang);
+  p.append('client', 'tw-ob');
+  if (slow) p.append('ttsspeed', '0.24');
+  return 'https://translate.google.com/translate_tts?' + p.toString();
+}
+
+// Split text into <=200-char chunks on word boundaries for TTS.
+function ttsChunks(text) {
+  const parts = [];
+  let s = String(text).trim();
+  while (s.length > 200) {
+    let cut = s.lastIndexOf(' ', 200);
+    if (cut < 100) cut = 200;
+    parts.push(s.slice(0, cut).trim());
+    s = s.slice(cut).trim();
+    if (!s) break;
+  }
+  if (s) parts.push(s);
+  return parts;
+}
+
+// Play gTTS URL on the persistent audio element (iOS-safe pattern).
+function trPlayUrl(url, btn) {
+  if (currentAudio) {
+    currentAudio.pause();
+    if (currentAudio._btn) currentAudio._btn.classList.remove('playing');
+  }
+  const audio = getAutoplayAudioEl();
+  audio.src = url;
+  audio.load();
+  currentAudio = audio;
+  audio._btn = btn;
+  if (btn) btn.classList.add('playing');
+  audio.onended = () => { if (btn) btn.classList.remove('playing'); };
+  audio.onerror = () => { if (btn) btn.classList.remove('playing'); showFlash('Audio failed'); };
+  audio.play().catch(() => { if (btn) btn.classList.remove('playing'); });
+}
+
+// ── Cache (offline reuse of recent translations) ────────────────────
+function trCacheKey(sl, tl, q) {
+  return 'tr_' + sl + '_' + tl + '_' + q.trim().toLowerCase();
+}
+
+function trCacheGet(key) {
+  try {
+    const all = JSON.parse(localStorage.getItem(TRANSLATE_TR_CACHES) || '{}');
+    const hit = all[key];
+    if (hit && Date.now() - hit.t < TRANSLATE_TTL_MS) return hit.v;
+  } catch { /* corrupted cache — ignore */ }
+  return null;
+}
+
+function trCachePut(key, value) {
+  try {
+    const all = JSON.parse(localStorage.getItem(TRANSLATE_TR_CACHES) || '{}');
+    const keys = Object.keys(all);
+    if (keys.length > 200) {
+      // Keep the 200 most recent entries
+      keys.sort((a, b) => all[b].t - all[a].t);
+      for (const k of keys.slice(200)) delete all[k];
+    }
+    all[key] = { t: Date.now(), v: value };
+    localStorage.setItem(TRANSLATE_TR_CACHES, JSON.stringify(all));
+  } catch { /* storage full — silently skip */ }
+}
+// Strip diacritics from Google's transliteration (Pāṇī → Pani) to match
+// the deck's plain romanization style (Pimsleur-style, no accent marks).
+function plainRom(s) {
+  if (!s) return '';
+  return s.normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+}
+
+// ── Main flow ──────────────────────────────────────────────────────
+async function trGo(autoPlay) {
+  if (trBusy) return;
+  const inp = document.getElementById('tr-input');
+  const q = inp ? inp.value.trim() : '';
+  if (!q) { showFlash('Type or speak something first'); return; }
+
+  // Gesture unlock for iOS — do it synchronously inside the tap handler
+  // before any await (the fetches below add async delay).
+  try { trUnlockAudio(); } catch {}
+
+  trBusy = true;
+  const goBtn = document.getElementById('tr-go-btn');
+  if (goBtn) { goBtn.textContent = 'Translating…'; goBtn.disabled = true; }
+  trSetStatus('Translating…');
+  const res = document.getElementById('tr-result');
+  if (res) res.innerHTML = '';
+
+  try {
+    let result;
+    const cached = trCacheGet(trCacheKey(trDirection, '', q));
+    if (cached) {
+      result = cached;
+      trSetStatus('From cache');
+    } else {
+      if (trDirection === 'en2pa') {
+        const t = await gTranslate('en', 'pa', q);
+        result = { en: q, gur: t.trans, rom: plainRom(t.translit) };
+      } else {
+        // pa2en: input may be Gurmukhi or romanized.
+        // If no Gurmukhi characters, transliterate romanized → Gurmukhi first.
+        let gur = q;
+        let rom = '';
+        if (!/[\u0A00-\u0A7F]/.test(q)) {
+          trSetStatus('Converting romanized → Gurmukhi…');
+          const conv = await gTransliterate(q);
+          if (conv) gur = conv;
+          else { gur = q; rom = q; }  // transliteration unavailable — try translating as-is
+        }
+        const t = await gTranslate('pa', 'en', gur);
+        // Romanized display: user's own romanized input if they typed it,
+        // else Google's romanization of the Gurmukhi (src_translit)
+        rom = rom || plainRom(t.srcTranslit) || '';
+        result = { en: t.trans, gur: gur, rom: rom };
+      }
+      trCachePut(trCacheKey(trDirection, '', q), result);
+    }
+
+    if (!result.gur && !result.en) throw new Error('No translation returned');
+    trRenderResult(result, trDirection);
+
+    // Auto-play Punjabi audio after translating (unless autoPlay === false)
+    if (autoPlay !== false && result.gur) {
+      trSetStatus('');
+      if (result.gur.length > 200) {
+        trSpeakLong(result.gur, 'pa', false, document.getElementById('tr-pa-btn'));
+      } else {
+        trPlayUrl(ttsUrl(result.gur, 'pa'), document.getElementById('tr-pa-btn'));
+      }
+    } else {
+      trSetStatus('');
+    }
+  } catch (e) {
+    trSetStatus('');
+    showFlash('Translation failed — check connection');
+    console.log('Translate error:', e);
+  } finally {
+    trBusy = false;
+    const b = document.getElementById('tr-go-btn');
+    if (b) { b.textContent = 'Translate'; b.disabled = false; }
+  }
+}
+
+// iOS audio unlock inside the user's tap (before any await)
+function trUnlockAudio() {
+  const audio = getAutoplayAudioEl();
+  audio.src = 'audio/en/pa-00001.mp3';
+  audio.volume = 0;
+  audio.play().then(() => {
+    audio.pause(); audio.currentTime = 0; audio.volume = 1;
+  }).catch(() => { audio.volume = 1; });
+}
+
+function trRenderResult(result, dir) {
+  const res = document.getElementById('tr-result');
+  if (!res) return;
+  const note = result.gur && !isOnline() ? 'Offline — showing saved result' : '';
+
+  let html = `<div class="tr-result">`;
+  if (dir === 'en2pa') {
+    html += `
+      <div class="tr-label">English</div>
+      <div class="tr-en">${escapeHtml(result.en)}</div>
+      <div class="tr-label">Punjabi (Gurmukhi)</div>
+      <div class="tr-gur">${escapeHtml(result.gur)}</div>`;
+    if (result.rom) html += `
+      <div class="tr-label">Romanized</div>
+      <div class="tr-rom">${escapeHtml(result.rom)}</div>`;
+  } else {
+    html += `
+      <div class="tr-label">Punjabi (Gurmukhi)</div>
+      <div class="tr-gur">${escapeHtml(result.gur)}</div>`;
+    if (result.rom) html += `
+      <div class="tr-label">Romanized</div>
+      <div class="tr-rom">${escapeHtml(result.rom)}</div>`;
+    html += `
+      <div class="tr-label">English</div>
+      <div class="tr-en">${escapeHtml(result.en)}</div>`;
+  }
+  html += note ? `<div class="tr-note">${escapeHtml(note)}</div>` : '';
+
+  // Audio buttons — data attributes only (never JSON.stringify in onclick)
+  if (dir === 'en2pa') {
+    html += `
+      <div class="audio-row">
+        <button class="audio-btn" id="tr-pa-btn" data-tts-gur="${escapeAttr(result.gur)}" onclick="trSpeak(this)" title="Play Punjabi">🅿️</button>
+        <button class="audio-btn" id="tr-slow-btn" data-tts-gur="${escapeAttr(result.gur)}" data-slow="1" onclick="trSpeak(this)" title="Play slow Punjabi">🐢</button>
+        <button class="audio-btn" id="tr-en-btn" data-tts-en="${escapeAttr(result.en)}" onclick="trSpeak(this)" title="Play English">🇬🇧</button>
+        <button class="audio-btn" id="tr-save-btn" data-en="${escapeAttr(result.en)}" data-gur="${escapeAttr(result.gur)}" data-rom="${escapeAttr(result.rom || '')}" onclick="trSaveAsCard(this)" title="Save as flashcard">➕</button>
+      </div>`;
+  } else {
+    html += `
+      <div class="audio-row">
+        <button class="audio-btn" id="tr-pa-btn" data-tts-gur="${escapeAttr(result.gur)}" onclick="trSpeak(this)" title="Play Punjabi">🅿️</button>
+        <button class="audio-btn" id="tr-slow-btn" data-tts-gur="${escapeAttr(result.gur)}" data-slow="1" onclick="trSpeak(this)" title="Play slow Punjabi">🐢</button>
+        <button class="audio-btn" id="tr-en-btn" data-tts-en="${escapeAttr(result.en)}" onclick="trSpeak(this)" title="Play English">🇬🇧</button>
+        <button class="audio-btn" id="tr-save-btn" data-en="${escapeAttr(result.en)}" data-gur="${escapeAttr(result.gur)}" data-rom="${escapeAttr(result.rom || '')}" onclick="trSaveAsCard(this)" title="Save as flashcard">➕</button>
+      </div>`;
+  }
+  html += `</div>`;
+  res.innerHTML = html;
+}
+
+function trSpeak(btn) {
+  const gur = btn.dataset.ttsGur;
+  const en = btn.dataset.ttsEn;
+  const slow = btn.dataset.slow === '1';
+  // Each button carries exactly one payload — gur or en
+  if (gur) {
+    if (gur.length > 200) { trSpeakLong(gur, 'pa', slow, btn); }
+    else { trPlayUrl(ttsUrl(gur, 'pa', slow), btn); }
+  } else if (en) {
+    if (en.length > 200) { trSpeakLong(en, 'en', slow, btn); }
+    else { trPlayUrl(ttsUrl(en, 'en', slow), btn); }
+  }
+}
+
+// Multi-chunk sequential playback for text longer than the ~200-char TTS limit
+async function trSpeakLong(text, lang, slow, btn) {
+  const chunks = ttsChunks(text);
+  if (btn) btn.classList.add('playing');
+  for (const chunk of chunks) {
+    await playAudioAsync(ttsUrl(chunk, lang, slow));
+  }
+  if (btn) btn.classList.remove('playing');
+}
+
+async function trSaveAsCard(btn) {
+  const en = btn.dataset.en || '';
+  const gur = btn.dataset.gur || '';
+  const rom = btn.dataset.rom || '';
+  if (!en || !gur) { showFlash('Need both English and Gurmukhi to save'); return; }
+  // Reuse existing custom-card machinery
+  const cardId = createCustomCard(en, gur, rom, '', '');
+  showFlash('✓ Saved to custom cards');
+  const btnEl = document.getElementById('tr-save-btn');
+  if (btnEl) btnEl.disabled = true;
+}
+
+function escapeHtml(s) {
+  return String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+function escapeAttr(s) {
+  return escapeHtml(s).replace(/"/g, '&quot;');
+}
+
+function isOnline() {
+  return navigator.onLine !== false;
+}
+
+// ── Speech input (Web Speech API dictation — works on iOS) ─────────
+// NOTE: recognition (dictation) is NOT speechSynthesis. The skill docs
+// say speechSynthesis fails silently on iOS; the input-side recognition
+// is a different API and does work (iOS Safari ships it since 14.5+).
+function trToggleMic(btn) {
+  if (trListening) {
+    if (trRecognition) trRecognition.stop();
+    return;
+  }
+  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if (!SR) {
+    showFlash('Speech input not supported — use typing');
+    return;
+  }
+  trRecognition = new SR();
+  trRecognition.lang = trDirection === 'en2pa' ? 'en-US' : 'pa-IN';
+  trRecognition.interimResults = false;
+  trRecognition.continuous = false;
+  trRecognition.onstart = () => {
+    trListening = true;
+    btn.classList.add('recording');
+    btn.textContent = '⏹';
+    trSetStatus('Listening… tap ⏹ to stop');
+  };
+  trRecognition.onresult = (e) => {
+    const text = e.results[0][0].transcript;
+    const inp = document.getElementById('tr-input');
+    if (inp && text) {
+      inp.value = text;
+      trGo(true);
+    }
+  };
+  trRecognition.onerror = (e) => {
+    trSetStatus('');
+    if (e.error === 'not-allowed') showFlash('Microphone permission needed');
+    else if (e.error === 'no-speech') showFlash('No speech detected');
+    else showFlash('Speech error: ' + e.error);
+  };
+  trRecognition.onend = () => {
+    trListening = false;
+    btn.classList.remove('recording');
+    autoBtnReset();
+  };
+  try {
+    trRecognition.start();
+  } catch {
+    showFlash('Could not start microphone');
+  }
+}
+
+function autoBtnReset() {
+  const btn = document.getElementById('tr-mic-btn');
+  if (btn && !trListening) { btn.textContent = '🎤'; btn.classList.remove('recording'); }
+}
+
+// ═══════════════════════════════════════ TRANSLATE & SPEAK END ═══════════════════════════════════════
+
+// ═══════════════════════════════════════════════════════════════════
 // Rendering
 // ═══════════════════════════════════════════════════════════════════
 const app = document.getElementById('app');
@@ -970,6 +1451,7 @@ function render() {
   else if (currentView === 'categories') renderCategories();
   else if (currentView === 'card') renderCard();
   else if (currentView === 'create') renderCreateCard();
+  else if (currentView === 'translate') renderTranslate();
 }
 
 function renderHome() {
@@ -991,8 +1473,9 @@ function renderHome() {
       <div class="mode-tab active" onclick="goToSections()">📚 Browse Themes</div>
       <div class="mode-tab active" onclick="startSRSSession()">🔄 SRS Review</div>
     </div>
-    <div style="margin-top:12px;">
-      <button class="btn-primary" style="width:100%;" onclick="currentView='create';render()">➕ Create New Card</button>
+    <div style="margin-top:12px;display:flex;gap:10px;">
+      <button class="btn-secondary" style="flex:1;margin-left:0;" onclick="currentView='translate';render()">🔤 Translate & Speak</button>
+      <button class="btn-primary" style="flex:1;" onclick="currentView='create';render()">➕ Create New Card</button>
     </div>
     <div style="margin-top:20px;">
       <input class="search-box" type="text" placeholder="Search cards..." oninput="handleSearch(this.value)">
